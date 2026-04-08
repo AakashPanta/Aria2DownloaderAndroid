@@ -3,6 +3,9 @@ name: Build APK
 on:
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -18,32 +21,67 @@ jobs:
           java-version: '17'
           cache: gradle
 
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: 8.2
+
       - name: Setup Android SDK
         uses: android-actions/setup-android@v4
         with:
-          packages: "platform-tools platforms;android-34 build-tools;34.0.0"
+          packages: |
+            platform-tools
+            platforms;android-34
+            build-tools;34.0.0
 
       - name: Make gradlew executable
+        shell: bash
         run: chmod +x ./gradlew
 
-      - name: Show versions
+      - name: Show environment
+        shell: bash
         run: |
+          echo "=== Java ==="
+          java -version
+          echo "=== Gradle ==="
+          gradle -v
+          echo "=== Android SDK ==="
+          echo "ANDROID_HOME=$ANDROID_HOME"
+          echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT"
+
+      - name: Show project files
+        shell: bash
+        run: |
+          echo "=== Root files ==="
+          ls -lah
+          echo "=== gradlew ==="
+          ls -lah ./gradlew
+          echo "=== gradle wrapper dir ==="
+          ls -lah ./gradle/wrapper || true
           echo "=== gradle.properties ==="
           cat gradle.properties
           echo "=== gradle-wrapper.properties ==="
-          cat gradle/wrapper/gradle-wrapper.properties
+          cat gradle/wrapper/gradle-wrapper.properties || true
           echo "=== libs.versions.toml ==="
           cat gradle/libs.versions.toml
 
       - name: Clean
+        shell: bash
         run: ./gradlew clean --stacktrace --no-configuration-cache
 
       - name: Build debug APK
+        shell: bash
         run: ./gradlew assembleDebug --stacktrace --no-configuration-cache
+
+      - name: Show APK output
+        shell: bash
+        run: |
+          echo "=== APK output ==="
+          find app/build/outputs -type f | sed 's#^#- #'
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: app-debug-apk
-          path: app/build/outputs/apk/debug/app-debug.apk
+          path: app/build/outputs/apk/debug/*.apk
           if-no-files-found: error
