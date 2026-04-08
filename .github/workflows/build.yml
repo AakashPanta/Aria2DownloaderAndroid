@@ -52,6 +52,14 @@ jobs:
       - name: Make gradlew executable
         run: chmod +x ./gradlew
 
+      - name: Fix gradle.properties for Java 17
+        run: |
+          if [ -f gradle.properties ]; then
+            sed -i 's/-XX:MaxPermSize=512m//g' gradle.properties
+            echo "=== gradle.properties ==="
+            cat gradle.properties
+          fi
+
       - name: Clean
         run: ./gradlew clean
 
