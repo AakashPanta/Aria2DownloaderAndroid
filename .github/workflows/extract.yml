@@ -1,0 +1,73 @@
+name: Extract ZIP into Repo
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  extract:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install unzip
+        run: sudo apt-get update && sudo apt-get install -y unzip
+
+      - name: Verify ZIP exists
+        run: |
+          ls -lah
+          test -f "Aria2DownloaderAndroid_updated.zip"
+
+      - name: Clean repo except .git, .github, and ZIP
+        run: |
+          find . -mindepth 1 \
+            ! -path "./.git" ! -path "./.git/*" \
+            ! -path "./.github" ! -path "./.github/*" \
+            ! -name "Aria2DownloaderAndroid_updated.zip" \
+            -exec rm -rf {} +
+
+      - name: Extract ZIP
+        run: |
+          mkdir extracted
+          unzip -o "Aria2DownloaderAndroid_updated.zip" -d extracted
+          echo "=== Extracted structure ==="
+          find extracted -maxdepth 3 | sed 's#^#- #'
+
+      - name: Find real project root
+        id: projectroot
+        shell: bash
+        run: |
+          PROJECT_DIR=$(find extracted -name gradlew -exec dirname {} \; | head -n 1)
+          if [ -z "$PROJECT_DIR" ]; then
+            echo "gradlew not found inside extracted ZIP"
+            exit 1
+          fi
+          echo "project_dir=$PROJECT_DIR" >> "$GITHUB_OUTPUT"
+          echo "PROJECT_DIR=$PROJECT_DIR"
+
+      - name: Copy extracted project into repo root
+        shell: bash
+        run: |
+          shopt -s dotglob
+          cp -r "${{ steps.projectroot.outputs.project_dir }}"/* .
+
+      - name: Show final repo files
+        run: |
+          echo "=== Final repo root ==="
+          ls -lah
+          echo "=== gradlew path ==="
+          find . -maxdepth 2 -name gradlew
+
+      - name: Commit extracted files back to repo
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "Extract project from ZIP into repo" || echo "No changes to commit"
+          git push
