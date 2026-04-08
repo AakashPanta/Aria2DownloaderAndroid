@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="Theme.Aria2Downloader" parent="android:Theme.Material.Light">
+        <item name="android:colorPrimary">@color/md_theme_light_primary</item>
+        <item name="android:colorSecondary">@color/md_theme_light_secondary</item>
+        <item name="android:colorTertiary">@color/md_theme_light_tertiary</item>
+        <item name="android:colorBackground">@color/md_theme_light_background</item>
+        <item name="android:colorSurface">@color/md_theme_light_surface</item>
+        <item name="android:colorError">@color/md_theme_light_error</item>
+    </style>
+
+    <style name="Theme.Aria2Downloader.Dark" parent="android:Theme.Material">
+        <item name="android:colorPrimary">@color/md_theme_dark_primary</item>
+        <item name="android:colorSecondary">@color/md_theme_dark_secondary</item>
+        <item name="android:colorTertiary">@color/md_theme_dark_tertiary</item>
+        <item name="android:colorBackground">@color/md_theme_dark_background</item>
+        <item name="android:colorSurface">@color/md_theme_dark_surface</item>
+        <item name="android:colorError">@color/md_theme_dark_error</item>
+    </style>
+</resources>
