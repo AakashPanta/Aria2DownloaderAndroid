@@ -23,13 +23,6 @@ jobs:
         with:
           packages: "platform-tools platforms;android-34 build-tools;34.0.0"
 
-      - name: Force Gradle wrapper version
-        run: |
-          if [ -f gradle/wrapper/gradle-wrapper.properties ]; then
-            sed -i 's#distributionUrl=.*#distributionUrl=https\\://services.gradle.org/distributions/gradle-8.5-bin.zip#g' gradle/wrapper/gradle-wrapper.properties
-            cat gradle/wrapper/gradle-wrapper.properties
-          fi
-
       - name: Make gradlew executable
         run: chmod +x ./gradlew
 
@@ -37,6 +30,8 @@ jobs:
         run: |
           echo "=== gradle.properties ==="
           cat gradle.properties
+          echo "=== gradle-wrapper.properties ==="
+          cat gradle/wrapper/gradle-wrapper.properties
           echo "=== libs.versions.toml ==="
           cat gradle/libs.versions.toml
 
