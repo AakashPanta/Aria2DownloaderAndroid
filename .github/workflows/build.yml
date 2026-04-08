@@ -33,16 +33,18 @@ jobs:
       - name: Make gradlew executable
         run: chmod +x ./gradlew
 
-      - name: Disable configuration cache
+      - name: Show versions
         run: |
-          echo "org.gradle.configuration-cache=false" >> gradle.properties
+          echo "=== gradle.properties ==="
           cat gradle.properties
+          echo "=== libs.versions.toml ==="
+          cat gradle/libs.versions.toml
 
       - name: Clean
-        run: ./gradlew clean --stacktrace
+        run: ./gradlew clean --stacktrace --no-configuration-cache
 
       - name: Build debug APK
-        run: ./gradlew assembleDebug --stacktrace
+        run: ./gradlew assembleDebug --stacktrace --no-configuration-cache
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
