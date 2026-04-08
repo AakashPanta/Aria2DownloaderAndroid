@@ -1,4 +1,4 @@
-name: Build APK FINAL
+name: Build APK
 
 on:
   workflow_dispatch:
@@ -8,51 +8,45 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout repo
+        uses: actions/checkout@v4
 
-      - run: sudo apt-get update && sudo apt-get install -y unzip
-
-      - name: Extract ZIP
-        run: unzip -o Aria2DownloaderAndroid_updated.zip -d project
-
-      - name: Move project
-        run: |
-          PROJECT_DIR=$(find project -name gradlew -exec dirname {} \; | head -n 1)
-          shopt -s dotglob
-          cp -r "$PROJECT_DIR"/* .
-
-      - uses: actions/setup-java@v5
+      - name: Set up JDK 17
+        uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: '17'
+          cache: gradle
 
-      - uses: android-actions/setup-android@v4
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v4
         with:
           packages: "platform-tools platforms;android-34 build-tools;34.0.0"
 
-      # Fix Gradle version
-      - run: |
-          sed -i 's#distributionUrl=.*#distributionUrl=https\\://services.gradle.org/distributions/gradle-8.5-bin.zip#g' gradle/wrapper/gradle-wrapper.properties
-
-      - run: chmod +x ./gradlew
-
-      # Fix JVM issue
-      - run: sed -i 's/-XX:MaxPermSize=512m//g' gradle.properties || true
-
-      # 🔥 FINAL FIX
-      - name: Fix Kotlin compatibility
+      - name: Force Gradle wrapper version
         run: |
-          echo "org.gradle.unsafe.configuration-cache=false" >> gradle.properties
-          find . -name "*.gradle.kts" -exec sed -i 's/kotlin(".*")/kotlin("1.9.22")/g' {} +
-          if [ -f gradle/libs.versions.toml ]; then
-            sed -i 's/kotlin = ".*"/kotlin = "1.9.22"/g' gradle/libs.versions.toml
+          if [ -f gradle/wrapper/gradle-wrapper.properties ]; then
+            sed -i 's#distributionUrl=.*#distributionUrl=https\\://services.gradle.org/distributions/gradle-8.5-bin.zip#g' gradle/wrapper/gradle-wrapper.properties
+            cat gradle/wrapper/gradle-wrapper.properties
           fi
 
-      - run: ./gradlew clean
+      - name: Make gradlew executable
+        run: chmod +x ./gradlew
 
-      - run: ./gradlew assembleDebug --stacktrace
+      - name: Disable configuration cache
+        run: |
+          echo "org.gradle.configuration-cache=false" >> gradle.properties
+          cat gradle.properties
 
-      - uses: actions/upload-artifact@v4
+      - name: Clean
+        run: ./gradlew clean --stacktrace
+
+      - name: Build debug APK
+        run: ./gradlew assembleDebug --stacktrace
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
         with:
           name: app-debug-apk
           path: app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
