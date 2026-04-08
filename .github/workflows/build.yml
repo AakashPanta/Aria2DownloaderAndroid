@@ -1,4 +1,4 @@
-name: Build APK from ZIP
+name: Build APK FINAL
 
 on:
   workflow_dispatch:
@@ -8,34 +8,30 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout repo
+      - name: Checkout
         uses: actions/checkout@v4
-
-      - name: List repo files
-        run: ls -lah
 
       - name: Install unzip
         run: sudo apt-get update && sudo apt-get install -y unzip
 
-      - name: Extract project ZIP
+      - name: Extract ZIP
         run: |
-          unzip -o Aria2DownloaderAndroid_updated.zip -d extracted
-          ls -lah extracted
+          unzip -o Aria2DownloaderAndroid_updated.zip -d project
+          ls -lah project
 
-      - name: Copy extracted files to repo root
+      - name: Move project to root
         run: |
           shopt -s dotglob
-          cp -r extracted/* .
+          cp -r project/* .
           ls -lah
 
-      - name: Set up Java 17
+      - name: Setup Java
         uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: '17'
-          cache: gradle
+          java-version: 17
 
-      - name: Set up Android SDK
+      - name: Setup Android SDK
         uses: android-actions/setup-android@v3
         with:
           packages: |
@@ -43,8 +39,8 @@ jobs:
             platforms;android-34
             build-tools;34.0.0
 
-      - name: Make gradlew executable
-        run: chmod +x ./gradlew
+      - name: Fix gradlew permission
+        run: chmod +x gradlew
 
       - name: Build APK
         run: ./gradlew assembleDebug --stacktrace
@@ -54,4 +50,3 @@ jobs:
         with:
           name: app-debug-apk
           path: app/build/outputs/apk/debug/app-debug.apk
-          if-no-files-found: error
