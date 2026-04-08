@@ -1,4 +1,4 @@
-name: Keep Only ZIP and Workflows
+name: Keep Only Workflows
 
 on:
   workflow_dispatch:
@@ -22,26 +22,27 @@ jobs:
           echo "=== BEFORE CLEANUP ==="
           find . -maxdepth 4 | sed 's#^#- #'
 
-      - name: Delete everything except ZIP and .github/workflows
+      - name: Delete everything except .github/workflows
         shell: bash
         run: |
           set -e
 
-          ZIP_FILE="Aria2DownloaderAndroid_updated.zip"
+          # Delete everything at repo root except .git and .github
+          find . -mindepth 1 -maxdepth 1 \
+            ! -name ".git" \
+            ! -name ".github" \
+            -exec rm -rf {} +
 
-          if [ ! -f "$ZIP_FILE" ]; then
-            echo "ZIP file not found: $ZIP_FILE"
+          # Inside .github, delete everything except workflows
+          find .github -mindepth 1 -maxdepth 1 \
+            ! -name "workflows" \
+            -exec rm -rf {} +
+
+          # Optional safety check
+          if [ ! -d ".github/workflows" ]; then
+            echo ".github/workflows folder is missing"
             exit 1
           fi
-
-          find . -mindepth 1 \
-            ! -path "./.git" \
-            ! -path "./.git/*" \
-            ! -path "./.github" \
-            ! -path "./.github/workflows" \
-            ! -path "./.github/workflows/*" \
-            ! -name "$ZIP_FILE" \
-            -exec rm -rf {} +
 
       - name: Show files after cleanup
         shell: bash
@@ -52,8 +53,4 @@ jobs:
       - name: Commit cleanup
         shell: bash
         run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add -A
-          git commit -m "Delete everything except ZIP and workflows" || echo "No changes to commit"
-          git push
+          git config user.name "github-actions[
