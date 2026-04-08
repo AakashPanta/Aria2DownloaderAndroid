@@ -1,4 +1,4 @@
-name: Build APK
+name: Build APK (Self-Healing)
 
 on:
   workflow_dispatch:
@@ -6,13 +6,25 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: build-apk-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build:
     runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    env:
+      CI: true
+      GRADLE_OPTS: -Dorg.gradle.daemon=false -Dorg.gradle.jvmargs=-Xmx4g
+      JAVA_TOOL_OPTIONS: -Xmx4g
 
     steps:
       - name: Checkout repo
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 1
 
       - name: Set up JDK 17
         uses: actions/setup-java@v5
@@ -22,66 +34,266 @@ jobs:
           cache: gradle
 
       - name: Set up Gradle
-        uses: gradle/actions/setup-gradle@v4
+        uses: gradle/actions/setup-gradle@v6
         with:
-          gradle-version: 8.2
+          gradle-version: '8.2'
 
-      - name: Setup Android SDK
+      - name: Set up Android SDK base tools
         uses: android-actions/setup-android@v4
         with:
-          packages: |
-            platform-tools
-            platforms;android-34
-            build-tools;34.0.0
+          packages: ''
 
-      - name: Make gradlew executable
-        shell: bash
-        run: chmod +x ./gradlew
-
-      - name: Show environment
+      - name: Build with auto-repair
         shell: bash
         run: |
-          echo "=== Java ==="
-          java -version
-          echo "=== Gradle ==="
-          gradle -v
-          echo "=== Android SDK ==="
-          echo "ANDROID_HOME=$ANDROID_HOME"
-          echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT"
+          set -Eeuo pipefail
+          shopt -s nullglob
 
-      - name: Show project files
-        shell: bash
-        run: |
-          echo "=== Root files ==="
-          ls -lah
-          echo "=== gradlew ==="
-          ls -lah ./gradlew
-          echo "=== gradle wrapper dir ==="
-          ls -lah ./gradle/wrapper || true
-          echo "=== gradle.properties ==="
-          cat gradle.properties
-          echo "=== gradle-wrapper.properties ==="
-          cat gradle/wrapper/gradle-wrapper.properties || true
-          echo "=== libs.versions.toml ==="
-          cat gradle/libs.versions.toml
+          log() {
+            echo "[$(date +'%H:%M:%S')] $*"
+          }
 
-      - name: Clean
-        shell: bash
-        run: ./gradlew clean --stacktrace --no-configuration-cache
+          detect_project_root() {
+            if [ -f "./settings.gradle" ] || [ -f "./settings.gradle.kts" ] || [ -f "./gradlew" ]; then
+              echo "."
+              return 0
+            fi
 
-      - name: Build debug APK
-        shell: bash
-        run: ./gradlew assembleDebug --stacktrace --no-configuration-cache
+            local found
+            found="$(find . -maxdepth 4 -type f \
+              \( -name "settings.gradle" -o -name "settings.gradle.kts" -o -name "gradlew" \) \
+              ! -path "./.git/*" ! -path "./.github/*" | head -n 1 || true)"
 
-      - name: Show APK output
-        shell: bash
-        run: |
-          echo "=== APK output ==="
-          find app/build/outputs -type f | sed 's#^#- #'
+            if [ -z "$found" ]; then
+              return 1
+            fi
 
-      - name: Upload APK
+            dirname "$found"
+          }
+
+          PROJECT_ROOT="$(detect_project_root)" || {
+            echo "Could not find Android project root."
+            exit 1
+          }
+
+          log "Project root: $PROJECT_ROOT"
+          cd "$PROJECT_ROOT"
+
+          SDKMANAGER="$(command -v sdkmanager || true)"
+          if [ -z "$SDKMANAGER" ]; then
+            echo "sdkmanager not found in PATH"
+            exit 1
+          fi
+
+          detect_compile_sdk() {
+            local sdk
+            sdk="$(grep -RhoE \
+              'compileSdkVersion[[:space:]]*[= ]*[0-9]+|compileSdk[[:space:]]*[= ]*[0-9]+' \
+              . --include='*.gradle' --include='*.kts' 2>/dev/null \
+              | grep -oE '[0-9]+' | head -n 1 || true)"
+            if [ -z "$sdk" ]; then
+              sdk="34"
+            fi
+            echo "$sdk"
+          }
+
+          COMPILE_SDK="$(detect_compile_sdk)"
+          DEFAULT_BUILD_TOOLS="${COMPILE_SDK}.0.0"
+
+          log "Detected compileSdk: $COMPILE_SDK"
+          log "Default build-tools target: $DEFAULT_BUILD_TOOLS"
+
+          write_local_properties() {
+            local sdk_dir="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-}}"
+            if [ -n "$sdk_dir" ]; then
+              printf 'sdk.dir=%s\n' "$sdk_dir" > local.properties
+              log "Wrote local.properties with sdk.dir=$sdk_dir"
+            fi
+          }
+
+          accept_licenses() {
+            yes | "$SDKMANAGER" --licenses >/dev/null || true
+          }
+
+          install_sdk_package() {
+            local pkg="$1"
+            local attempt
+            for attempt in 1 2 3; do
+              log "Installing SDK package: $pkg (attempt $attempt/3)"
+              if "$SDKMANAGER" --install "$pkg"; then
+                return 0
+              fi
+              sleep $((attempt * 5))
+            done
+            return 1
+          }
+
+          latest_build_tools_for_api() {
+            local api="$1"
+            "$SDKMANAGER" --list 2>/dev/null \
+              | tr -d '\r' \
+              | grep -oE "build-tools;${api}\.[0-9]+\.[0-9]+" \
+              | sort -V \
+              | tail -n 1 || true
+          }
+
+          ensure_android_packages() {
+            accept_licenses
+            install_sdk_package "platform-tools" || true
+            install_sdk_package "platforms;android-${COMPILE_SDK}" || true
+
+            if ! install_sdk_package "build-tools;${DEFAULT_BUILD_TOOLS}"; then
+              local latest_bt
+              latest_bt="$(latest_build_tools_for_api "$COMPILE_SDK")"
+              if [ -n "$latest_bt" ]; then
+                install_sdk_package "$latest_bt" || true
+              fi
+            fi
+          }
+
+          ensure_gradle_bootstrap() {
+            if [ -f "./gradlew" ]; then
+              chmod +x ./gradlew
+            fi
+
+            if [ ! -f "./gradle/wrapper/gradle-wrapper.jar" ]; then
+              log "gradle-wrapper.jar missing. Trying to regenerate wrapper with system Gradle."
+              gradle wrapper --gradle-version 8.2 --no-daemon || true
+            fi
+
+            if [ -f "./gradlew" ]; then
+              chmod +x ./gradlew
+              GRADLE_CMD="./gradlew"
+            else
+              GRADLE_CMD="gradle"
+            fi
+
+            log "Using Gradle command: $GRADLE_CMD"
+          }
+
+          fix_from_log() {
+            local logfile="$1"
+            local changed=1
+
+            if grep -qiE 'SDK location not found|local.properties' "$logfile"; then
+              write_local_properties
+              changed=0
+            fi
+
+            if grep -qiE 'License .* not accepted|licenses not accepted' "$logfile"; then
+              accept_licenses
+              changed=0
+            fi
+
+            if grep -qiE 'GradleWrapperMain|gradle-wrapper\.jar' "$logfile"; then
+              ensure_gradle_bootstrap
+              changed=0
+            fi
+
+            if grep -qiE 'Permission denied' "$logfile" && [ -f "./gradlew" ]; then
+              chmod +x ./gradlew
+              changed=0
+            fi
+
+            local api
+            api="$(grep -oE 'android-[0-9]+' "$logfile" | grep -oE '[0-9]+' | tail -n 1 || true)"
+            if [ -n "$api" ]; then
+              if grep -qiE 'failed to find target with hash string|platforms;android-|compileSdkVersion is not specified|compileSdk' "$logfile"; then
+                install_sdk_package "platforms;android-${api}" || true
+                changed=0
+              fi
+            fi
+
+            local bt
+            bt="$(grep -oE 'build-tools;[0-9]+\.[0-9]+\.[0-9]+|Build Tools revision [0-9]+\.[0-9]+\.[0-9]+' "$logfile" \
+              | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -n 1 || true)"
+            if [ -n "$bt" ]; then
+              install_sdk_package "build-tools;${bt}" || true
+              changed=0
+            fi
+
+            if grep -qiE 'Could not resolve|Failed to transform|Connection reset|Read timed out|502 Bad Gateway|503 Service Unavailable|Temporary failure' "$logfile"; then
+              EXTRA_GRADLE_ARGS="--refresh-dependencies"
+              changed=0
+            fi
+
+            return "$changed"
+          }
+
+          run_build_once() {
+            local attempt="$1"
+            local logfile="build-attempt-${attempt}.log"
+
+            set +e
+            "$GRADLE_CMD" \
+              clean \
+              assembleDebug \
+              --stacktrace \
+              --no-daemon \
+              --no-configuration-cache \
+              ${EXTRA_GRADLE_ARGS:-} \
+              2>&1 | tee "$logfile"
+            local exit_code="${PIPESTATUS[0]}"
+            set -e
+
+            return "$exit_code"
+          }
+
+          mkdir -p ci-logs
+          write_local_properties
+          ensure_android_packages
+          ensure_gradle_bootstrap
+
+          build_ok=0
+          max_attempts=5
+
+          for attempt in $(seq 1 "$max_attempts"); do
+            log "Starting build attempt ${attempt}/${max_attempts}"
+            EXTRA_GRADLE_ARGS="${EXTRA_GRADLE_ARGS:-}"
+
+            if run_build_once "$attempt"; then
+              build_ok=1
+              log "Build succeeded on attempt ${attempt}"
+              mv "build-attempt-${attempt}.log" "ci-logs/"
+              break
+            fi
+
+            mv "build-attempt-${attempt}.log" "ci-logs/" || true
+
+            log "Build failed on attempt ${attempt}"
+            if fix_from_log "ci-logs/build-attempt-${attempt}.log"; then
+              log "No known auto-fix matched this failure. Stopping retries."
+              break
+            fi
+
+            log "Applied auto-fix. Retrying..."
+            sleep 5
+          done
+
+          echo "=== APK files found ==="
+          find . -type f \( -path "*/build/outputs/apk/*/*.apk" -o -path "*/build/outputs/apk/*.apk" \) | sed 's#^#- #'
+
+          if [ "$build_ok" -ne 1 ]; then
+            echo "Build did not succeed after retries."
+            exit 1
+          fi
+
+      - name: Upload APKs
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: app-debug-apk
-          path: app/build/outputs/apk/debug/*.apk
-          if-no-files-found: error
+          name: apk-files
+          path: |
+            **/build/outputs/apk/debug/*.apk
+            **/build/outputs/apk/release/*.apk
+          if-no-files-found: warn
+
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-logs
+          path: |
+            **/ci-logs/*.log
+            **/build/reports/**
+          if-no-files-found: warn
