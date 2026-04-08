@@ -1,0 +1,40 @@
+name: Delete Extracted Folder
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  delete_extracted:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Show files before delete
+        run: |
+          echo "=== BEFORE ==="
+          find . -maxdepth 3 | sed 's#^#- #'
+
+      - name: Delete extracted folder
+        run: |
+          rm -rf extracted
+          echo "Deleted extracted folder"
+
+      - name: Show files after delete
+        run: |
+          echo "=== AFTER ==="
+          find . -maxdepth 3 | sed 's#^#- #'
+
+      - name: Commit deletion
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "Delete extracted folder" || echo "No changes to commit"
+          git push
