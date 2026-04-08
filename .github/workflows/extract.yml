@@ -44,21 +44,18 @@ jobs:
         run: |
           set -e
 
-          # Delete everything at repo root except .git and .github and ZIP
           find . -mindepth 1 -maxdepth 1 \
             ! -name ".git" \
             ! -name ".github" \
             ! -name "$ZIP_FILE" \
             -exec rm -rf {} +
 
-          # Inside .github, delete everything except workflows
           if [ -d ".github" ]; then
             find .github -mindepth 1 -maxdepth 1 \
               ! -name "workflows" \
               -exec rm -rf {} +
           fi
 
-          # Safety check
           mkdir -p .github/workflows
 
       - name: Extract ZIP
