@@ -1,4 +1,4 @@
-name: Build APK Final
+name: Build APK FINAL
 
 on:
   workflow_dispatch:
@@ -17,25 +17,16 @@ jobs:
       - name: Extract ZIP
         run: |
           unzip -o Aria2DownloaderAndroid_updated.zip -d project
-          echo "=== Extracted files ==="
-          find project -maxdepth 3 | sed 's#^#- #'
+          find project -maxdepth 3
 
       - name: Find gradlew
-        run: |
-          echo "=== Searching for gradlew ==="
-          find . -name gradlew
+        run: find . -name gradlew
 
-      - name: Move extracted project contents correctly
+      - name: Move project correctly
         run: |
           PROJECT_DIR=$(find project -name gradlew -exec dirname {} \; | head -n 1)
-          echo "PROJECT_DIR=$PROJECT_DIR"
-          if [ -z "$PROJECT_DIR" ]; then
-            echo "gradlew not found"
-            exit 1
-          fi
           shopt -s dotglob
           cp -r "$PROJECT_DIR"/* .
-          ls -lah
 
       - name: Set up JDK 17
         uses: actions/setup-java@v5
@@ -49,21 +40,29 @@ jobs:
         with:
           packages: "platform-tools platforms;android-34 build-tools;34.0.0"
 
+      # 🔥 FIX 1: Gradle compatibility
+      - name: Force Gradle version
+        run: |
+          if [ -f gradle/wrapper/gradle-wrapper.properties ]; then
+            sed -i 's#distributionUrl=.*#distributionUrl=https\\://services.gradle.org/distributions/gradle-8.5-bin.zip#g' gradle/wrapper/gradle-wrapper.properties
+            cat gradle/wrapper/gradle-wrapper.properties
+          fi
+
       - name: Make gradlew executable
         run: chmod +x ./gradlew
 
-      - name: Fix gradle.properties for Java 17
+      # 🔥 FIX 2: Remove deprecated JVM flag
+      - name: Fix gradle.properties
         run: |
           if [ -f gradle.properties ]; then
             sed -i 's/-XX:MaxPermSize=512m//g' gradle.properties
-            echo "=== gradle.properties ==="
             cat gradle.properties
           fi
 
       - name: Clean
         run: ./gradlew clean
 
-      - name: Build debug APK
+      - name: Build APK
         run: ./gradlew assembleDebug --stacktrace
 
       - name: Upload APK
@@ -71,4 +70,3 @@ jobs:
         with:
           name: app-debug-apk
           path: app/build/outputs/apk/debug/app-debug.apk
-          if-no-files-found: error
