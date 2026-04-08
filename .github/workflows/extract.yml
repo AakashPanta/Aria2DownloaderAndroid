@@ -10,64 +10,143 @@ jobs:
   extract:
     runs-on: ubuntu-latest
 
+    env:
+      ZIP_FILE: Aria2DownloaderAndroid_icon_updated.zip
+
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Install unzip
-        run: sudo apt-get update && sudo apt-get install -y unzip
+      - name: Ensure unzip is available
+        shell: bash
+        run: |
+          set -e
+          sudo apt-get update
+          sudo apt-get install -y unzip
+
+      - name: Show files before extract
+        shell: bash
+        run: |
+          echo "=== BEFORE ==="
+          find . -maxdepth 4 | sed 's#^#- #'
 
       - name: Verify ZIP exists
+        shell: bash
         run: |
+          set -e
           ls -lah
-          test -f "Aria2DownloaderAndroid_updated.zip"
+          test -f "$ZIP_FILE"
 
-      - name: Clean repo except .git, .github, and ZIP
+      - name: Clean repo except .git, .github/workflows, and ZIP
+        shell: bash
         run: |
-          find . -mindepth 1 \
-            ! -path "./.git" ! -path "./.git/*" \
-            ! -path "./.github" ! -path "./.github/*" \
-            ! -name "Aria2DownloaderAndroid_updated.zip" \
+          set -e
+
+          # Delete everything at repo root except .git and .github and ZIP
+          find . -mindepth 1 -maxdepth 1 \
+            ! -name ".git" \
+            ! -name ".github" \
+            ! -name "$ZIP_FILE" \
             -exec rm -rf {} +
 
+          # Inside .github, delete everything except workflows
+          if [ -d ".github" ]; then
+            find .github -mindepth 1 -maxdepth 1 \
+              ! -name "workflows" \
+              -exec rm -rf {} +
+          fi
+
+          # Safety check
+          mkdir -p .github/workflows
+
       - name: Extract ZIP
+        shell: bash
         run: |
-          mkdir extracted
-          unzip -o "Aria2DownloaderAndroid_updated.zip" -d extracted
-          echo "=== Extracted structure ==="
-          find extracted -maxdepth 3 | sed 's#^#- #'
+          set -e
+          mkdir -p extracted
+          unzip -o "$ZIP_FILE" -d extracted
+
+          echo "=== EXTRACTED STRUCTURE ==="
+          find extracted -maxdepth 4 | sed 's#^#- #'
 
       - name: Find real project root
         id: projectroot
         shell: bash
         run: |
-          PROJECT_DIR=$(find extracted -name gradlew -exec dirname {} \; | head -n 1)
+          set -e
+
+          PROJECT_DIR="$(find extracted -type f -name gradlew -exec dirname {} \; | head -n 1)"
+
           if [ -z "$PROJECT_DIR" ]; then
-            echo "gradlew not found inside extracted ZIP"
+            PROJECT_DIR="$(find extracted -type f \( -name settings.gradle -o -name settings.gradle.kts \) -exec dirname {} \; | head -n 1)"
+          fi
+
+          if [ -z "$PROJECT_DIR" ]; then
+            echo "Could not find Android project root inside ZIP"
             exit 1
           fi
+
           echo "project_dir=$PROJECT_DIR" >> "$GITHUB_OUTPUT"
           echo "PROJECT_DIR=$PROJECT_DIR"
+
+      - name: Remove extracted .github so workflows stay untouched
+        shell: bash
+        run: |
+          set -e
+          PROJECT_DIR="${{ steps.projectroot.outputs.project_dir }}"
+          rm -rf "$PROJECT_DIR/.github"
 
       - name: Copy extracted project into repo root
         shell: bash
         run: |
-          shopt -s dotglob
-          cp -r "${{ steps.projectroot.outputs.project_dir }}"/* .
+          set -e
+          PROJECT_DIR="${{ steps.projectroot.outputs.project_dir }}"
+          cp -a "$PROJECT_DIR"/. .
+
+      - name: Delete extracted folder automatically
+        shell: bash
+        run: |
+          set -e
+          rm -rf extracted
+
+      - name: Delete ZIP after successful extraction
+        shell: bash
+        run: |
+          set -e
+          rm -f "$ZIP_FILE"
+
+      - name: Final safety check for workflows
+        shell: bash
+        run: |
+          set -e
+          mkdir -p .github/workflows
 
       - name: Show final repo files
+        shell: bash
         run: |
-          echo "=== Final repo root ==="
+          echo "=== FINAL REPO ROOT ==="
           ls -lah
           echo "=== gradlew path ==="
-          find . -maxdepth 2 -name gradlew
+          find . -maxdepth 3 -name gradlew
+          echo "=== .github contents ==="
+          find .github -maxdepth 3 | sed 's#^#- #'
 
       - name: Commit extracted files back to repo
+        shell: bash
         run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          set -e
+
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+
           git add -A
-          git commit -m "Extract project from ZIP into repo" || echo "No changes to commit"
+
+          if git diff --cached --quiet; then
+            echo "No changes to commit"
+            exit 0
+          fi
+
+          git commit -m 'Extract project from ZIP into repo'
           git push
