@@ -17,12 +17,24 @@ jobs:
       - name: Extract ZIP
         run: |
           unzip -o Aria2DownloaderAndroid_updated.zip -d project
-          ls -lah project
+          echo "=== Extracted files ==="
+          find project -maxdepth 3 | sed 's#^#- #'
 
-      - name: Move project files to repo root
+      - name: Find gradlew
         run: |
+          echo "=== Searching for gradlew ==="
+          find . -name gradlew
+
+      - name: Move extracted project contents correctly
+        run: |
+          PROJECT_DIR=$(find project -name gradlew -exec dirname {} \; | head -n 1)
+          echo "PROJECT_DIR=$PROJECT_DIR"
+          if [ -z "$PROJECT_DIR" ]; then
+            echo "gradlew not found"
+            exit 1
+          fi
           shopt -s dotglob
-          cp -r project/* .
+          cp -r "$PROJECT_DIR"/* .
           ls -lah
 
       - name: Set up JDK 17
