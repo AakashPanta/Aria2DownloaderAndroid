@@ -51,10 +51,11 @@ class Aria2ProcessManager @Inject constructor(
         }
 
         val homeDir = File(context.filesDir, "aria2/home").apply { mkdirs() }
-        val sessionFile = File(homeDir, "session.txt").apply { if (!exists()) createNewFile() }
-        val logFile = File(homeDir, "aria2.log")
-        if (!logFile.exists()) {
-            logFile.createNewFile()
+        val sessionFile = File(homeDir, "session.txt").apply {
+            if (!exists()) createNewFile()
+        }
+        val logFile = File(homeDir, "aria2.log").apply {
+            if (!exists()) createNewFile()
         }
 
         val aria2Args = mutableListOf(
@@ -98,7 +99,7 @@ class Aria2ProcessManager @Inject constructor(
             .redirectOutput(ProcessBuilder.Redirect.appendTo(logFile))
             .start()
 
-        repeat(40) {
+        for (i in 0 until 40) {
             if (rpcClient.isAvailable()) {
                 return@withContext
             }
@@ -178,8 +179,10 @@ class Aria2ProcessManager @Inject constructor(
         if (!wrapper.exists() || wrapper.readText() != script) {
             wrapper.writeText(script)
         }
+
         wrapper.setReadable(true, true)
         wrapper.setWritable(true, true)
+        wrapper.setExecutable(true, true)
         return wrapper
     }
 }
