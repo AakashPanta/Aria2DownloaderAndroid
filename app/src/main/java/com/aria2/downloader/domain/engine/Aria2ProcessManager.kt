@@ -40,7 +40,7 @@ class Aria2ProcessManager @Inject constructor(
             return@withContext
         }
 
-        val binary = installBinaryIfNeeded()
+        val binary = resolveBundledBinary()
         val wrapper = installWrapper(binary)
         val settings = settingsRepository.currentSettings()
         val targetDownloadDir = resolveDownloadDirectory(settings)
@@ -53,6 +53,9 @@ class Aria2ProcessManager @Inject constructor(
         val homeDir = File(context.filesDir, "aria2/home").apply { mkdirs() }
         val sessionFile = File(homeDir, "session.txt").apply { if (!exists()) createNewFile() }
         val logFile = File(homeDir, "aria2.log")
+        if (!logFile.exists()) {
+            logFile.createNewFile()
+        }
 
         val aria2Args = mutableListOf(
             "--enable-rpc=true",
@@ -95,15 +98,38 @@ class Aria2ProcessManager @Inject constructor(
             .redirectOutput(ProcessBuilder.Redirect.appendTo(logFile))
             .start()
 
-        repeat(30) {
+        repeat(40) {
             if (rpcClient.isAvailable()) {
                 return@withContext
             }
-            delay(300)
+
+            val exited = runCatching { process?.exitValue() }.getOrNull()
+            if (exited != null) {
+                break
+            }
+
+            delay(250)
         }
 
+        val exitCode = runCatching { process?.exitValue() }.getOrNull()
+        val logTail = runCatching {
+            logFile.takeIf { it.exists() }
+                ?.readText()
+                ?.takeLast(4000)
+                ?.trim()
+        }.getOrNull()
+
         throw IllegalStateException(
-            "aria2 daemon did not start. This bundled build currently supports arm64-v8a devices only."
+            buildString {
+                append("aria2 daemon did not start")
+                exitCode?.let { append(" (exit code ").append(it).append(")") }
+                if (!logTail.isNullOrBlank()) {
+                    append(". Log: ")
+                    append(logTail)
+                } else {
+                    append(". Check that libaria2c.so exists in app/src/main/jniLibs/arm64-v8a/")
+                }
+            }
         )
     }
 
@@ -113,50 +139,47 @@ class Aria2ProcessManager @Inject constructor(
         process = null
     }
 
-    private fun installBinaryIfNeeded(): File {
+    private fun resolveBundledBinary(): File {
         require(
             Build.SUPPORTED_ABIS.any { it.equals("arm64-v8a", ignoreCase = true) }
-        ) { "The bundled aria2 binary only supports arm64-v8a devices." }
+        ) { "This build currently supports arm64-v8a only." }
 
-        val binDir = File(context.filesDir, "aria2/bin").apply { mkdirs() }
-        val outFile = File(binDir, "aria2c")
-        if (!outFile.exists() || outFile.length() == 0L) {
-            context.assets.open("bin/aria2c-arm64-v8a").use { input ->
-                outFile.outputStream().use { output -> input.copyTo(output) }
-            }
-        }
-        outFile.setExecutable(true)
+        val libDir = File(context.applicationInfo.nativeLibraryDir)
+        val binary = File(libDir, "libaria2c.so")
 
-        val wrapper = File(binDir, "aria2-wrapper.sh")
-        if (wrapper.exists()) {
-            wrapper.setExecutable(true)
+        require(binary.exists()) {
+            "Bundled aria2 binary not found at ${binary.absolutePath}"
         }
 
-        return outFile
+        binary.setExecutable(true)
+        return binary
     }
 
     private fun installWrapper(binary: File): File {
-        val wrapper = File(binary.parentFile, "aria2-wrapper.sh")
+        val wrapper = File(context.filesDir, "aria2/bin/aria2-wrapper.sh")
+        wrapper.parentFile?.mkdirs()
+
         val script = """
             |#!/system/bin/sh
-            |BIN_DIR="${'$'}(CDPATH= cd -- "${'$'}(dirname -- "${'$'}0")" && pwd)"
+            |ARIA2_BIN="${binary.absolutePath}"
             |DNS1="${'$'}(getprop net.dns1)"
             |DNS2="${'$'}(getprop net.dns2)"
             |if [ -d /etc/security/cacerts ]; then
-            |  cat /etc/security/cacerts/* | "${'$'}BIN_DIR/aria2c" \
+            |  cat /etc/security/cacerts/* | "${'$'}ARIA2_BIN" \
             |    --ca-certificate=/proc/self/fd/0 \
             |    --async-dns \
             |    --async-dns-server="${'$'}{DNS1},${'$'}{DNS2}" \
             |    "${'$'}@"
             |else
-            |  "${'$'}BIN_DIR/aria2c" "${'$'}@"
+            |  "${'$'}ARIA2_BIN" "${'$'}@"
             |fi
         """.trimMargin()
 
         if (!wrapper.exists() || wrapper.readText() != script) {
             wrapper.writeText(script)
         }
-        wrapper.setExecutable(true)
+        wrapper.setReadable(true, true)
+        wrapper.setWritable(true, true)
         return wrapper
     }
 }
