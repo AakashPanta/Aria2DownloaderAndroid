@@ -217,42 +217,42 @@ class Aria2ProcessManager @Inject constructor(
         val script = """
             |#!/system/bin/sh
             |ARIA2_BIN="${binary.absolutePath}"
-            |DNS1="$(getprop net.dns1)"
-            |DNS2="$(getprop net.dns2)"
-            |DNS3="$(getprop net.dns3)"
-            |DNS4="$(getprop net.dns4)"
+            |DNS1="${'$'}(getprop net.dns1)"
+            |DNS2="${'$'}(getprop net.dns2)"
+            |DNS3="${'$'}(getprop net.dns3)"
+            |DNS4="${'$'}(getprop net.dns4)"
             |
             |DNS_LIST=""
-            |for DNS in "$DNS1" "$DNS2" "$DNS3" "$DNS4"; do
-            |  if [ -n "$DNS" ]; then
-            |    if [ -z "$DNS_LIST" ]; then
-            |      DNS_LIST="$DNS"
+            |for DNS in "${'$'}DNS1" "${'$'}DNS2" "${'$'}DNS3" "${'$'}DNS4"; do
+            |  if [ -n "${'$'}DNS" ]; then
+            |    if [ -z "${'$'}DNS_LIST" ]; then
+            |      DNS_LIST="${'$'}DNS"
             |    else
-            |      DNS_LIST="$DNS_LIST,$DNS"
+            |      DNS_LIST="${'$'}DNS_LIST,${'$'}DNS"
             |    fi
             |  fi
             |done
             |
             |if [ -d /etc/security/cacerts ]; then
-            |  if [ -n "$DNS_LIST" ]; then
-            |    cat /etc/security/cacerts/* | "$ARIA2_BIN" \
+            |  if [ -n "${'$'}DNS_LIST" ]; then
+            |    cat /etc/security/cacerts/* | "${'$'}ARIA2_BIN" \
             |      --ca-certificate=/proc/self/fd/0 \
             |      --async-dns=true \
-            |      --async-dns-server="$DNS_LIST" \
-            |      "$@"
+            |      --async-dns-server="${'$'}DNS_LIST" \
+            |      "${'$'}@"
             |  else
-            |    cat /etc/security/cacerts/* | "$ARIA2_BIN" \
+            |    cat /etc/security/cacerts/* | "${'$'}ARIA2_BIN" \
             |      --ca-certificate=/proc/self/fd/0 \
-            |      "$@"
+            |      "${'$'}@"
             |  fi
             |else
-            |  if [ -n "$DNS_LIST" ]; then
-            |    "$ARIA2_BIN" \
+            |  if [ -n "${'$'}DNS_LIST" ]; then
+            |    "${'$'}ARIA2_BIN" \
             |      --async-dns=true \
-            |      --async-dns-server="$DNS_LIST" \
-            |      "$@"
+            |      --async-dns-server="${'$'}DNS_LIST" \
+            |      "${'$'}@"
             |  else
-            |    "$ARIA2_BIN" "$@"
+            |    "${'$'}ARIA2_BIN" "${'$'}@"
             |  fi
             |fi
         """.trimMargin()
