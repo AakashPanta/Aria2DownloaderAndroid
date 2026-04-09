@@ -37,10 +37,10 @@ fun AboutScreen(paddingTop: androidx.compose.ui.unit.Dp) {
                     verticalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
                     Text("Aria2 Downloader", style = MaterialTheme.typography.headlineSmall)
-                    Text("Version 1.2.0", style = MaterialTheme.typography.titleMedium)
+                    Text("Version 1.1.0", style = MaterialTheme.typography.titleMedium)
                     Text("Developer: Aakash Panta", style = MaterialTheme.typography.bodyLarge)
                     Text(
-                        "Premium Android download manager powered by a bundled aria2 daemon and local JSON-RPC. Includes active, queued and completed sections, torrent and metalink support, theme switching, launcher-icon selection, startup permission handling and custom export folders.",
+                        "Production-style Android download manager with aria2 JSON-RPC, multi-connection direct downloads, BitTorrent, magnet and Metalink support, foreground syncing and a Material 3 UI.",
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )

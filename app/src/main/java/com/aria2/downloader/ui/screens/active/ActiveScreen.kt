@@ -10,6 +10,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -24,6 +25,7 @@ import androidx.compose.ui.unit.dp
 import com.aria2.downloader.domain.model.DownloadStatus
 import com.aria2.downloader.ui.components.DownloadCard
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ActiveScreen(
     paddingTop: androidx.compose.ui.unit.Dp,
@@ -51,6 +53,7 @@ fun ActiveScreen(
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
             item { Spacer(modifier = Modifier.height(4.dp)) }
+
             if (downloads.isEmpty()) {
                 item {
                     Text(

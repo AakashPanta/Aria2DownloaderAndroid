@@ -3,7 +3,6 @@ package com.aria2.downloader.ui.screens.home
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
-import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -14,7 +13,6 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Download
-import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material3.Button
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FloatingActionButton
@@ -39,7 +37,6 @@ fun HomeScreen(
     viewModel: HomeViewModel,
     onNewDownload: () -> Unit,
     onOpenActive: () -> Unit,
-    onOpenQueued: () -> Unit,
     onOpenCompleted: () -> Unit,
     onOpenDetail: (String) -> Unit
 ) {
@@ -67,14 +64,14 @@ fun HomeScreen(
             item {
                 Spacer(modifier = Modifier.height(4.dp))
                 Text(
-                    "IDM-style queueing, aria2 RPC control, torrents, metalinks and a custom download-location pipeline.",
+                    "Fast direct links, torrents and metalinks powered by aria2 RPC.",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
 
             item {
-                Row(
+                androidx.compose.foundation.layout.Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
@@ -82,26 +79,6 @@ fun HomeScreen(
                         title = "Active",
                         value = state.active.size.toString(),
                         subtitle = "Live queue",
-                        modifier = Modifier.weight(1f)
-                    )
-                    MetricCard(
-                        title = "Queued",
-                        value = state.queued.size.toString(),
-                        subtitle = "Waiting jobs",
-                        modifier = Modifier.weight(1f)
-                    )
-                }
-            }
-
-            item {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(12.dp)
-                ) {
-                    MetricCard(
-                        title = "Speed",
-                        value = DownloadProgress.formatBytes(state.totalSpeedBytes) + "/s",
-                        subtitle = "Combined throughput",
                         modifier = Modifier.weight(1f)
                     )
                     MetricCard(
@@ -114,21 +91,36 @@ fun HomeScreen(
             }
 
             item {
-                Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                    Button(onClick = onOpenActive, modifier = Modifier.weight(1f)) {
-                        Icon(Icons.Default.Download, contentDescription = null)
-                        Text(" Active")
-                    }
-                    Button(onClick = onOpenQueued, modifier = Modifier.weight(1f)) {
-                        Icon(Icons.Default.Schedule, contentDescription = null)
-                        Text(" Queue")
-                    }
+                androidx.compose.foundation.layout.Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    MetricCard(
+                        title = "Speed",
+                        value = DownloadProgress.formatBytes(state.totalSpeedBytes) + "/s",
+                        subtitle = "Combined throughput",
+                        modifier = Modifier.weight(1f)
+                    )
+                    MetricCard(
+                        title = "Library",
+                        value = state.all.size.toString(),
+                        subtitle = "Tracked downloads",
+                        modifier = Modifier.weight(1f)
+                    )
                 }
             }
 
             item {
-                Button(onClick = onOpenCompleted, modifier = Modifier.fillMaxWidth()) {
-                    Text("Open completed downloads")
+                androidx.compose.foundation.layout.Row(
+                    horizontalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    Button(onClick = onOpenActive, modifier = Modifier.weight(1f)) {
+                        Icon(Icons.Default.Download, contentDescription = null)
+                        Text(" Active")
+                    }
+                    Button(onClick = onOpenCompleted, modifier = Modifier.weight(1f)) {
+                        Text("Completed")
+                    }
                 }
             }
 
@@ -145,7 +137,7 @@ fun HomeScreen(
                             style = MaterialTheme.typography.titleMedium
                         )
                         Text(
-                            "Paste a direct link, magnet, torrent or metalink and it will be queued through aria2 with multi-connection defaults.",
+                            "The old “validating URL” dead-end is gone. Paste a direct link, magnet, torrent or metalink and the request goes straight into aria2.",
                             style = MaterialTheme.typography.bodyMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )

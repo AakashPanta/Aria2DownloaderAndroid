@@ -137,27 +137,14 @@ fun DetailScreen(
                                 Text("Retry")
                             }
                             OutlinedButton(
-                                onClick = {
-                                    viewModel.delete(item)
-                                    onNavigateBack()
-                                },
+                                onClick = { viewModel.cancel(item) },
                                 modifier = Modifier.weight(1f)
                             ) {
-                                Text("Delete")
+                                Text("Dismiss")
                             }
                         }
 
-                        else -> {
-                            OutlinedButton(
-                                onClick = {
-                                    viewModel.delete(item)
-                                    onNavigateBack()
-                                },
-                                modifier = Modifier.weight(1f)
-                            ) {
-                                Text("Delete")
-                            }
-                        }
+                        else -> Unit
                     }
                 }
             }

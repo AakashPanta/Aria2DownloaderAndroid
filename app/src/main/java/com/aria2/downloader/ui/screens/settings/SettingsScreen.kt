@@ -1,7 +1,5 @@
 package com.aria2.downloader.ui.screens.settings
 
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.contract.ActivityResultContracts.OpenDocumentTree
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -11,26 +9,20 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AssistChip
-import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SegmentedButton
 import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import androidx.compose.material3.Slider
-import androidx.compose.material3.SnackbarHost
-import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import com.aria2.downloader.domain.model.AppIcon
@@ -40,30 +32,11 @@ import com.aria2.downloader.domain.model.ThemeMode
 @Composable
 fun SettingsScreen(
     paddingTop: androidx.compose.ui.unit.Dp,
-    viewModel: SettingsViewModel,
-    onOpenAbout: () -> Unit
+    viewModel: SettingsViewModel
 ) {
     val settings by viewModel.settings.collectAsState()
-    val message by viewModel.message.collectAsState()
-    val snackbarHostState = remember { SnackbarHostState() }
 
-    val treePicker = rememberLauncherForActivityResult(OpenDocumentTree()) { uri ->
-        if (uri != null) {
-            viewModel.updateDownloadLocation(uri)
-        }
-    }
-
-    LaunchedEffect(message) {
-        message?.let {
-            snackbarHostState.showSnackbar(it)
-            viewModel.consumeMessage()
-        }
-    }
-
-    Scaffold(
-        topBar = { TopAppBar(title = { Text("Settings") }) },
-        snackbarHost = { SnackbarHost(snackbarHostState) }
-    ) { inner ->
+    Scaffold(topBar = { TopAppBar(title = { Text("Settings") }) }) { inner ->
         Column(
             modifier = Modifier
                 .fillMaxSize()
@@ -79,35 +52,12 @@ fun SettingsScreen(
                         SegmentedButton(
                             selected = settings.themeMode == mode,
                             onClick = { viewModel.updateTheme(mode) },
-                            shape = androidx.compose.material3.SegmentedButtonDefaults.itemShape(index, ThemeMode.entries.size)
+                            shape = androidx.compose.material3.SegmentedButtonDefaults.itemShape(
+                                index,
+                                ThemeMode.entries.size
+                            )
                         ) {
                             Text(mode.name.lowercase().replaceFirstChar { it.titlecase() })
-                        }
-                    }
-                }
-            }
-
-            SettingsCard("Download location") {
-                Text(
-                    settings.downloadLocationLabel ?: "App-managed Downloads folder",
-                    style = MaterialTheme.typography.titleMedium
-                )
-                Text(
-                    if (settings.downloadLocationUri == null) {
-                        "Downloads are saved to the app-managed folder by default. Pick a custom folder to export completed files there automatically."
-                    } else {
-                        "Completed files are copied to the selected folder after aria2 finishes writing them in the staging area."
-                    },
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    Button(onClick = { treePicker.launch(null) }) {
-                        Text("Choose folder")
-                    }
-                    if (settings.downloadLocationUri != null) {
-                        OutlinedButton(onClick = viewModel::resetDownloadLocation) {
-                            Text("Reset")
                         }
                     }
                 }
@@ -147,15 +97,21 @@ fun SettingsScreen(
             }
 
             SettingsCard("Notifications") {
-                ToggleRow("Foreground service notifications", settings.notificationsEnabled, viewModel::updateNotifications)
+                ToggleRow(
+                    "Foreground service notifications",
+                    settings.notificationsEnabled,
+                    viewModel::updateNotifications
+                )
             }
 
-            SettingsCard("About") {
-                Text("Aria2 Downloader v1.2.0", style = MaterialTheme.typography.bodyMedium)
+            SettingsCard("About this build") {
+                Text("Version 1.1.0", style = MaterialTheme.typography.bodyMedium)
                 Text("Developer: Aakash Panta", style = MaterialTheme.typography.bodyMedium)
-                Button(onClick = onOpenAbout) {
-                    Text("Open about screen")
-                }
+                Text(
+                    "This build ships a bundled arm64 aria2 binary, starts it as a local daemon, and talks to it over JSON-RPC.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
             }
         }
     }
