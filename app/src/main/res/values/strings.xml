@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Aria2 Downloader</string>
+    <string name="download_service_channel">Download engine</string>
+    <string name="download_service_description">Keeps aria2 running and syncs progress.</string>
+</resources>

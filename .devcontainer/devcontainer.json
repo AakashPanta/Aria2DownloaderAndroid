@@ -1,0 +1,22 @@
+{
+  "name": "Android + Gradle",
+  "image": "mcr.microsoft.com/devcontainers/java:22",
+  "features": {
+    "ghcr.io/devcontainers/features/gradle:1": {},
+    "ghcr.io/devcontainers/features/android:1": {}
+  },
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "vscjava.language-java",
+        "mhutchie.git-graph",
+        "ms-vscode.makefile-tools"
+      ],
+      "settings": {
+        "java.home": "/usr/local/sdkman/candidates/java/current"
+      }
+    }
+  },
+  "postCreateCommand": "sdk install gradle 8.2",
+  "remoteUser": "vscode"
+}
