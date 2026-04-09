@@ -1,4 +1,4 @@
-name: Replace Aria2ProcessManager
+name: Fix Aria2ProcessManager Build Failure
 
 on:
   workflow_dispatch:
@@ -32,6 +32,7 @@ jobs:
           import com.aria2.downloader.domain.model.AppSettings
           import dagger.hilt.android.qualifiers.ApplicationContext
           import java.io.File
+          import java.net.ServerSocket
           import javax.inject.Inject
           import javax.inject.Singleton
           import kotlinx.coroutines.Dispatchers
@@ -71,6 +72,12 @@ jobs:
                           return@withLock
                       }
 
+                      val reusablePort = findReusableRpcPort()
+                      if (reusablePort != null) {
+                          Aria2Runtime.rpcPort = reusablePort
+                          return@withLock
+                      }
+
                       val binary = resolveBundledBinary()
                       val wrapper = installWrapper(binary)
                       val settings = settingsRepository.currentSettings()
@@ -80,7 +87,9 @@ jobs:
                           process?.destroy()
                           process = null
                           delay(300)
-                          if (rpcClient.isAvailable()) {
+                          val revivedPort = findReusableRpcPort()
+                          if (revivedPort != null) {
+                              Aria2Runtime.rpcPort = revivedPort
                               return@withLock
                           }
                       }
@@ -93,90 +102,92 @@ jobs:
                           if (!exists()) createNewFile()
                       }
 
-                      val aria2Args = mutableListOf(
-                          "--enable-rpc=true",
-                          "--rpc-listen-all=false",
-                          "--rpc-listen-port=6800",
-                          "--rpc-secret=${settings.rpcToken}",
-                          "--dir=${targetDownloadDir.absolutePath}",
-                          "--continue=true",
-                          "--auto-file-renaming=true",
-                          "--allow-overwrite=false",
-                          "--max-concurrent-downloads=${settings.maxConcurrentDownloads}",
-                          "--split=${settings.split}",
-                          "--max-connection-per-server=${settings.maxConnectionPerServer}",
-                          "--min-split-size=${settings.minSplitSizeMb}M",
-                          "--file-allocation=none",
-                          "--summary-interval=0",
-                          "--disk-cache=16M",
-                          "--enable-dht=${settings.enableDht}",
-                          "--enable-peer-exchange=${settings.peerExchange}",
-                          "--bt-enable-lpd=${settings.localPeerDiscovery}",
-                          "--bt-require-crypto=${settings.requireEncryption}",
-                          "--follow-torrent=true",
-                          "--follow-metalink=true",
-                          "--bt-save-metadata=true",
-                          "--rpc-save-upload-metadata=true",
-                          "--save-session=${sessionFile.absolutePath}",
-                          "--input-file=${sessionFile.absolutePath}",
-                          "--save-session-interval=30",
-                          "--seed-time=0",
-                          "--log=${logFile.absolutePath}"
-                      )
+                      var lastErrorText = ""
 
-                      val command = mutableListOf("/system/bin/sh", wrapper.absolutePath).apply {
-                          addAll(aria2Args)
-                      }
+                      for (port in Aria2Runtime.RPC_PORT_RANGE) {
+                          if (!canBind(port)) continue
 
-                      process = ProcessBuilder(command)
-                          .directory(homeDir)
-                          .redirectErrorStream(true)
-                          .redirectOutput(ProcessBuilder.Redirect.appendTo(logFile))
-                          .start()
+                          val aria2Args = mutableListOf(
+                              "--enable-rpc=true",
+                              "--rpc-listen-all=false",
+                              "--rpc-listen-port=$port",
+                              "--rpc-secret=${settings.rpcToken}",
+                              "--dir=${targetDownloadDir.absolutePath}",
+                              "--continue=true",
+                              "--auto-file-renaming=true",
+                              "--allow-overwrite=false",
+                              "--max-concurrent-downloads=${settings.maxConcurrentDownloads}",
+                              "--split=${settings.split}",
+                              "--max-connection-per-server=${settings.maxConnectionPerServer}",
+                              "--min-split-size=${settings.minSplitSizeMb}M",
+                              "--file-allocation=none",
+                              "--summary-interval=0",
+                              "--disk-cache=16M",
+                              "--enable-dht=${settings.enableDht}",
+                              "--enable-peer-exchange=${settings.peerExchange}",
+                              "--bt-enable-lpd=${settings.localPeerDiscovery}",
+                              "--bt-require-crypto=${settings.requireEncryption}",
+                              "--follow-torrent=true",
+                              "--follow-metalink=true",
+                              "--bt-save-metadata=true",
+                              "--rpc-save-upload-metadata=true",
+                              "--save-session=${sessionFile.absolutePath}",
+                              "--input-file=${sessionFile.absolutePath}",
+                              "--save-session-interval=30",
+                              "--seed-time=0",
+                              "--log=${logFile.absolutePath}",
+                              "--stop-with-process=${android.os.Process.myPid()}"
+                          )
 
-                      for (i in 0 until 40) {
-                          if (rpcClient.isAvailable()) {
-                              return@withLock
+                          val command = mutableListOf("/system/bin/sh", wrapper.absolutePath).apply {
+                              addAll(aria2Args)
                           }
 
-                          val exited = runCatching { process?.exitValue() }.getOrNull()
-                          if (exited != null) {
-                              break
-                          }
+                          process = ProcessBuilder(command)
+                              .directory(homeDir)
+                              .redirectErrorStream(true)
+                              .redirectOutput(ProcessBuilder.Redirect.appendTo(logFile))
+                              .start()
 
-                          delay(250)
-                      }
-
-                      val exitCode = runCatching { process?.exitValue() }.getOrNull()
-                      val logTail = runCatching {
-                          logFile.takeIf { it.exists() }
-                              ?.readText()
-                              ?.takeLast(4000)
-                              ?.trim()
-                              .orEmpty()
-                      }.getOrDefault("")
-
-                      val addressInUse = logTail.contains("Address already in use", ignoreCase = true) ||
-                          logTail.contains("failed to bind TCP port 6800", ignoreCase = true)
-
-                      if (addressInUse) {
-                          for (i in 0 until 20) {
-                              if (rpcClient.isAvailable()) {
+                          for (i in 0 until 40) {
+                              if (rpcClient.isAvailableOnPort(port)) {
+                                  Aria2Runtime.rpcPort = port
                                   return@withLock
                               }
+
+                              val exited = runCatching { process?.exitValue() }.getOrNull()
+                              if (exited != null) {
+                                  break
+                              }
+
                               delay(250)
+                          }
+
+                          val logTail = runCatching {
+                              logFile.takeIf { it.exists() }
+                                  ?.readText()
+                                  ?.takeLast(4000)
+                                  ?.trim()
+                                  .orEmpty()
+                          }.getOrDefault("")
+
+                          lastErrorText = logTail
+
+                          val reusableAfterFailure = findReusableRpcPort()
+                          if (reusableAfterFailure != null) {
+                              Aria2Runtime.rpcPort = reusableAfterFailure
+                              return@withLock
                           }
                       }
 
                       throw IllegalStateException(
                           buildString {
                               append("aria2 daemon did not start")
-                              exitCode?.let { append(" (exit code ").append(it).append(")") }
-                              if (logTail.isNotBlank()) {
+                              if (lastErrorText.isNotBlank()) {
                                   append(". Log: ")
-                                  append(logTail)
+                                  append(lastErrorText)
                               } else {
-                                  append(". Check that libaria2c.so exists in app/src/main/jniLibs/arm64-v8a/")
+                                  append(". No free RPC port found in range ${Aria2Runtime.RPC_PORT_RANGE.first}..${Aria2Runtime.RPC_PORT_RANGE.last}.")
                               }
                           }
                       )
@@ -189,6 +200,24 @@ jobs:
                       process?.destroy()
                       process = null
                   }
+              }
+
+              private suspend fun findReusableRpcPort(): Int? {
+                  for (port in Aria2Runtime.RPC_PORT_RANGE) {
+                      if (rpcClient.isAvailableOnPort(port)) {
+                          return port
+                      }
+                  }
+                  return null
+              }
+
+              private fun canBind(port: Int): Boolean {
+                  return runCatching {
+                      ServerSocket(port).use { socket ->
+                          socket.reuseAddress = true
+                      }
+                      true
+                  }.getOrDefault(false)
               }
 
               private fun resolveBundledBinary(): File {
@@ -216,14 +245,41 @@ jobs:
                       |ARIA2_BIN="${binary.absolutePath}"
                       |DNS1="${'$'}(getprop net.dns1)"
                       |DNS2="${'$'}(getprop net.dns2)"
+                      |DNS3="${'$'}(getprop net.dns3)"
+                      |DNS4="${'$'}(getprop net.dns4)"
+                      |
+                      |DNS_LIST=""
+                      |for DNS in "${'$'}DNS1" "${'$'}DNS2" "${'$'}DNS3" "${'$'}DNS4"; do
+                      |  if [ -n "${'$'}DNS" ]; then
+                      |    if [ -z "${'$'}DNS_LIST" ]; then
+                      |      DNS_LIST="${'$'}DNS"
+                      |    else
+                      |      DNS_LIST="${'$'}DNS_LIST,${'$'}DNS"
+                      |    fi
+                      |  fi
+                      |done
+                      |
                       |if [ -d /etc/security/cacerts ]; then
-                      |  cat /etc/security/cacerts/* | "${'$'}ARIA2_BIN" \
-                      |    --ca-certificate=/proc/self/fd/0 \
-                      |    --async-dns \
-                      |    --async-dns-server="${'$'}{DNS1},${'$'}{DNS2}" \
-                      |    "${'$'}@"
+                      |  if [ -n "${'$'}DNS_LIST" ]; then
+                      |    cat /etc/security/cacerts/* | "${'$'}ARIA2_BIN" \
+                      |      --ca-certificate=/proc/self/fd/0 \
+                      |      --async-dns=true \
+                      |      --async-dns-server="${'$'}DNS_LIST" \
+                      |      "${'$'}@"
+                      |  else
+                      |    cat /etc/security/cacerts/* | "${'$'}ARIA2_BIN" \
+                      |      --ca-certificate=/proc/self/fd/0 \
+                      |      "${'$'}@"
+                      |  fi
                       |else
-                      |  "${'$'}ARIA2_BIN" "${'$'}@"
+                      |  if [ -n "${'$'}DNS_LIST" ]; then
+                      |    "${'$'}ARIA2_BIN" \
+                      |      --async-dns=true \
+                      |      --async-dns-server="${'$'}DNS_LIST" \
+                      |      "${'$'}@"
+                      |  else
+                      |    "${'$'}ARIA2_BIN" "${'$'}@"
+                      |  fi
                       |fi
                   """.trimMargin()
 
@@ -260,5 +316,5 @@ jobs:
             exit 0
           fi
 
-          git commit -m 'Replace Aria2ProcessManager with mutex startup fix'
+          git commit -m 'Fix Aria2ProcessManager build failure'
           git push
