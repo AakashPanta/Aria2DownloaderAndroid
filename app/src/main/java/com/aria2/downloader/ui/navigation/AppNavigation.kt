@@ -53,10 +53,20 @@ sealed class Route(val route: String, val title: String) {
 
 @Composable
 fun AppNavHost(navController: NavHostController) {
-    val topLevel = listOf(Route.Home, Route.Active, Route.Queued, Route.Completed, Route.Settings)
+    val topLevel = listOf(
+        Route.Home,
+        Route.Active,
+        Route.Queued,
+        Route.Completed,
+        Route.Settings
+    )
+
     val navBackStackEntry by navController.currentBackStackEntryAsState()
     val currentDestination = navBackStackEntry?.destination
-    val showBottomBar = topLevel.any { currentDestination?.hierarchy?.any { node -> node.route == it.route } == true }
+
+    val showBottomBar = topLevel.any { item ->
+        currentDestination?.hierarchy?.any { node -> node.route == item.route } == true
+    }
 
     Scaffold(
         bottomBar = {
@@ -64,6 +74,7 @@ fun AppNavHost(navController: NavHostController) {
                 NavigationBar {
                     topLevel.forEach { item ->
                         val selected = currentDestination?.hierarchy?.any { it.route == item.route } == true
+
                         NavigationBarItem(
                             selected = selected,
                             onClick = {
@@ -104,11 +115,11 @@ fun AppNavHost(navController: NavHostController) {
                     viewModel = viewModel,
                     onNewDownload = { navController.navigate(Route.NewDownload.route) },
                     onOpenActive = { navController.navigate(Route.Active.route) },
-                    onOpenQueued = { navController.navigate(Route.Queued.route) },
                     onOpenCompleted = { navController.navigate(Route.Completed.route) },
                     onOpenDetail = { navController.navigate(Route.Detail.create(it)) }
                 )
             }
+
             composable(Route.Active.route) {
                 val viewModel: ActiveViewModel = hiltViewModel()
                 ActiveScreen(
@@ -118,6 +129,7 @@ fun AppNavHost(navController: NavHostController) {
                     onOpenDetail = { navController.navigate(Route.Detail.create(it)) }
                 )
             }
+
             composable(Route.Queued.route) {
                 val viewModel: QueuedViewModel = hiltViewModel()
                 QueuedScreen(
@@ -126,6 +138,7 @@ fun AppNavHost(navController: NavHostController) {
                     onOpenDetail = { navController.navigate(Route.Detail.create(it)) }
                 )
             }
+
             composable(Route.Completed.route) {
                 val viewModel: HistoryViewModel = hiltViewModel()
                 HistoryScreen(
@@ -134,17 +147,21 @@ fun AppNavHost(navController: NavHostController) {
                     onOpenDetail = { navController.navigate(Route.Detail.create(it)) }
                 )
             }
+
             composable(Route.Settings.route) {
                 val viewModel: SettingsViewModel = hiltViewModel()
                 SettingsScreen(
                     paddingTop = paddingValues.calculateTopPadding(),
-                    viewModel = viewModel,
-                    onOpenAbout = { navController.navigate(Route.About.route) }
+                    viewModel = viewModel
                 )
             }
+
             composable(Route.About.route) {
-                AboutScreen(paddingTop = paddingValues.calculateTopPadding())
+                AboutScreen(
+                    paddingTop = paddingValues.calculateTopPadding()
+                )
             }
+
             composable(Route.NewDownload.route) {
                 val viewModel: NewDownloadViewModel = hiltViewModel()
                 NewDownloadScreen(
@@ -152,6 +169,7 @@ fun AppNavHost(navController: NavHostController) {
                     onNavigateBack = { navController.popBackStack() }
                 )
             }
+
             composable(
                 route = Route.Detail.route,
                 arguments = listOf(navArgument("downloadId") { type = NavType.StringType })
