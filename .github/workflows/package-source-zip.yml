@@ -1,0 +1,68 @@
+name: Package Source Code ZIP
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  package:
+    runs-on: ubuntu-latest
+
+    env:
+      ZIP_NAME: Aria2DownloaderAndroid_source_v1.0.0.zip
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Remove old ZIP if it exists
+        shell: bash
+        run: |
+          set -e
+          rm -f "$ZIP_NAME"
+
+      - name: Create clean source ZIP
+        shell: bash
+        run: |
+          set -e
+
+          zip -r "$ZIP_NAME" . \
+            -x ".git/*" \
+            -x ".gradle/*" \
+            -x ".idea/*" \
+            -x "**/.DS_Store" \
+            -x "**/build/*" \
+            -x "**/captures/*" \
+            -x "**/.cxx/*" \
+            -x "**/.externalNativeBuild/*" \
+            -x "local.properties" \
+            -x "*.apk" \
+            -x "*.aab" \
+            -x "$ZIP_NAME"
+
+      - name: Show ZIP details
+        shell: bash
+        run: |
+          ls -lah "$ZIP_NAME"
+
+      - name: Commit ZIP to repo
+        shell: bash
+        run: |
+          set -e
+
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+
+          git add "$ZIP_NAME"
+
+          if git diff --cached --quiet; then
+            echo "No ZIP changes to commit"
+            exit 0
+          fi
+
+          git commit -m 'Add source code ZIP package'
+          git push
