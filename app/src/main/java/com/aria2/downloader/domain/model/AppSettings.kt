@@ -13,6 +13,7 @@ data class AppSettings(
     val notificationsEnabled: Boolean = true,
     val appIcon: AppIcon = AppIcon.DEFAULT,
     val rpcToken: String = "aakash-aria2-rpc",
+    val downloadLocationPath: String = "/storage/emulated/0/Download",
     val downloadLocationUri: String? = null,
     val downloadLocationLabel: String? = null
 )

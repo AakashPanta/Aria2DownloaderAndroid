@@ -41,13 +41,14 @@ class DownloadEngine @Inject constructor(
         processManager.ensureRunning()
         val settings = settingsRepository.currentSettings()
         applyGlobalSettings(settings)
+        val targetDir = processManager.resolveDownloadDirectory(settings)
 
         val initial = DownloadInfo(
             id = UUID.randomUUID().toString(),
             source = validation.normalizedInput,
             fileName = validation.fileName,
             sourceType = validation.sourceType,
-            destinationDir = processManager.downloadDirectory.absolutePath,
+            destinationDir = displayDestination(settings),
             totalBytes = validation.totalBytes,
             status = DownloadStatus.VALIDATING,
             mimeType = validation.mimeType,
@@ -59,6 +60,7 @@ class DownloadEngine @Inject constructor(
             validation.normalizedInput,
             buildDownloadOptions(
                 settings = settings,
+                targetDir = targetDir,
                 fileName = validation.fileName,
                 selectedFiles = selectedFiles,
                 includeOut = validation.sourceType == DownloadSourceType.DIRECT
@@ -102,7 +104,13 @@ class DownloadEngine @Inject constructor(
         processManager.ensureRunning()
         rpcClient.unpause(gid)
         ensureForegroundService()
-        repository.upsert(record.copy(status = DownloadStatus.QUEUED, updatedAt = System.currentTimeMillis(), errorMessage = null))
+        repository.upsert(
+            record.copy(
+                status = DownloadStatus.QUEUED,
+                updatedAt = System.currentTimeMillis(),
+                errorMessage = null
+            )
+        )
     }
 
     suspend fun cancel(downloadId: String) {
@@ -161,11 +169,26 @@ class DownloadEngine @Inject constructor(
             ?: return Result.failure(IllegalArgumentException("Download not found"))
         return when (record.sourceType) {
             DownloadSourceType.TORRENT ->
-                runCatching { enqueueImportedFile(File(record.source), record.fileName, DownloadSourceType.TORRENT, record.selectedFiles) }
+                runCatching {
+                    enqueueImportedFile(
+                        File(record.source),
+                        record.fileName,
+                        DownloadSourceType.TORRENT,
+                        record.selectedFiles
+                    )
+                }
+
             DownloadSourceType.METALINK ->
-                runCatching { enqueueImportedFile(File(record.source), record.fileName, DownloadSourceType.METALINK, record.selectedFiles) }
-            else ->
-                enqueueLink(record.source, record.selectedFiles)
+                runCatching {
+                    enqueueImportedFile(
+                        File(record.source),
+                        record.fileName,
+                        DownloadSourceType.METALINK,
+                        record.selectedFiles
+                    )
+                }
+
+            else -> enqueueLink(record.source, record.selectedFiles)
         }
     }
 
@@ -176,7 +199,7 @@ class DownloadEngine @Inject constructor(
         val active = rpcClient.tellActive()
         val waiting = rpcClient.tellWaiting()
         val stopped = rpcClient.tellStopped(num = 200)
-        val stagingDir = processManager.downloadDirectory.absolutePath
+        val workingDir = processManager.resolveDownloadDirectory(settings).absolutePath
 
         val mapped = (active + waiting + stopped).map { task ->
             val existing = repository.getByGid(task.gid)
@@ -213,7 +236,7 @@ class DownloadEngine @Inject constructor(
                 )
                 if (exported != null) {
                     model = model.copy(destinationDir = exported)
-                } else if (existing?.destinationDir != null && existing.destinationDir != stagingDir) {
+                } else if (existing?.destinationDir != null && existing.destinationDir != workingDir) {
                     model = model.copy(destinationDir = existing.destinationDir)
                 }
             }
@@ -275,24 +298,32 @@ class DownloadEngine @Inject constructor(
         processManager.ensureRunning()
         val settings = settingsRepository.currentSettings()
         applyGlobalSettings(settings)
+        val targetDir = processManager.resolveDownloadDirectory(settings)
 
         val initial = DownloadInfo(
             id = UUID.randomUUID().toString(),
             source = localFile.absolutePath,
             fileName = displayName,
             sourceType = type,
-            destinationDir = processManager.downloadDirectory.absolutePath,
+            destinationDir = displayDestination(settings),
             status = DownloadStatus.VALIDATING,
             selectedFiles = selectedFiles
         )
         repository.upsert(initial)
 
-        val bytes = localFile.readBytes()
         val gid = when (type) {
             DownloadSourceType.TORRENT ->
-                rpcClient.addTorrent(bytes, buildDownloadOptions(settings, displayName, selectedFiles, includeOut = false))
+                rpcClient.addTorrent(
+                    localFile.readBytes(),
+                    buildDownloadOptions(settings, targetDir, displayName, selectedFiles, includeOut = false)
+                )
+
             DownloadSourceType.METALINK ->
-                rpcClient.addMetalink(bytes, buildDownloadOptions(settings, displayName, selectedFiles, includeOut = false)).first()
+                rpcClient.addMetalink(
+                    localFile.readBytes(),
+                    buildDownloadOptions(settings, targetDir, displayName, selectedFiles, includeOut = false)
+                ).first()
+
             else -> error("Unsupported import type")
         }
 
@@ -308,12 +339,13 @@ class DownloadEngine @Inject constructor(
 
     private fun buildDownloadOptions(
         settings: AppSettings,
+        targetDir: File,
         fileName: String,
         selectedFiles: String?,
         includeOut: Boolean
     ): Map<String, String> {
         val mutable = linkedMapOf(
-            "dir" to processManager.downloadDirectory.absolutePath,
+            "dir" to targetDir.absolutePath,
             "continue" to "true",
             "split" to settings.split.toString(),
             "max-connection-per-server" to settings.maxConnectionPerServer.toString(),
@@ -331,7 +363,11 @@ class DownloadEngine @Inject constructor(
     }
 
     private fun displayDestination(settings: AppSettings): String =
-        settings.downloadLocationLabel ?: processManager.downloadDirectory.absolutePath
+        if (settings.downloadLocationUri != null) {
+            settings.downloadLocationLabel ?: "Custom folder"
+        } else {
+            settings.downloadLocationPath
+        }
 
     private fun ensureForegroundService() {
         val intent = DownloadService.createIntent(context)
@@ -341,7 +377,10 @@ class DownloadEngine @Inject constructor(
     private suspend fun copyImportToInternalStorage(uri: Uri): File = withContext(Dispatchers.IO) {
         val name = DocumentFile.fromSingleUri(context, uri)?.name ?: "import-${System.currentTimeMillis()}"
         val extension = name.substringAfterLast('.', "")
-        val target = File(context.filesDir, "aria2/imports/${UUID.randomUUID()}${if (extension.isNotBlank()) ".${extension}" else ""}")
+        val target = File(
+            context.filesDir,
+            "aria2/imports/${UUID.randomUUID()}${if (extension.isNotBlank()) ".${extension}" else ""}"
+        )
         target.parentFile?.mkdirs()
         context.contentResolver.openInputStream(uri)?.use { input ->
             target.outputStream().use { output -> input.copyTo(output) }
@@ -385,14 +424,18 @@ class DownloadEngine @Inject constructor(
         val ext = fileName.substringAfterLast('.', "")
         var index = 0
         while (index < 1000) {
-            val candidate = if (index == 0) fileName else buildString {
-                append(base)
-                append(" (")
-                append(index)
-                append(")")
-                if (ext.isNotBlank()) {
-                    append('.')
-                    append(ext)
+            val candidate = if (index == 0) {
+                fileName
+            } else {
+                buildString {
+                    append(base)
+                    append(" (")
+                    append(index)
+                    append(")")
+                    if (ext.isNotBlank()) {
+                        append('.')
+                        append(ext)
+                    }
                 }
             }
             if (tree.findFile(candidate) == null) {

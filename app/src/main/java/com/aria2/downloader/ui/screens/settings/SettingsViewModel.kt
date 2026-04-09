@@ -30,40 +30,54 @@ class SettingsViewModel @Inject constructor(
     val message: StateFlow<String?> = _message.asStateFlow()
 
     fun updateTheme(mode: ThemeMode) = viewModelScope.launch { settingsRepository.updateThemeMode(mode) }
+
     fun updateConcurrent(value: Int) = viewModelScope.launch {
         settingsRepository.updateMaxConcurrentDownloads(value)
         runCatching { downloadEngine.applyGlobalSettings() }
     }
+
     fun updateSplit(value: Int) = viewModelScope.launch {
         settingsRepository.updateSplit(value)
         runCatching { downloadEngine.applyGlobalSettings() }
     }
+
     fun updateConnections(value: Int) = viewModelScope.launch {
         settingsRepository.updateMaxConnectionPerServer(value)
         runCatching { downloadEngine.applyGlobalSettings() }
     }
+
     fun updateMinSplit(value: Int) = viewModelScope.launch {
         settingsRepository.updateMinSplitSize(value)
         runCatching { downloadEngine.applyGlobalSettings() }
     }
+
     fun updateDht(enabled: Boolean) = viewModelScope.launch {
         settingsRepository.updateEnableDht(enabled)
         runCatching { downloadEngine.applyGlobalSettings() }
     }
+
     fun updatePex(enabled: Boolean) = viewModelScope.launch {
         settingsRepository.updatePeerExchange(enabled)
         runCatching { downloadEngine.applyGlobalSettings() }
     }
+
     fun updateLpd(enabled: Boolean) = viewModelScope.launch {
         settingsRepository.updateLocalPeerDiscovery(enabled)
         runCatching { downloadEngine.applyGlobalSettings() }
     }
+
     fun updateEncryption(enabled: Boolean) = viewModelScope.launch {
         settingsRepository.updateRequireEncryption(enabled)
         runCatching { downloadEngine.applyGlobalSettings() }
     }
-    fun updateNotifications(enabled: Boolean) = viewModelScope.launch { settingsRepository.updateNotificationsEnabled(enabled) }
-    fun updateIcon(icon: AppIcon) = viewModelScope.launch { settingsRepository.updateAppIcon(icon) }
+
+    fun updateNotifications(enabled: Boolean) = viewModelScope.launch {
+        settingsRepository.updateNotificationsEnabled(enabled)
+    }
+
+    fun updateIcon(icon: AppIcon) = viewModelScope.launch {
+        settingsRepository.updateAppIcon(icon)
+    }
 
     fun updateDownloadLocation(uri: Uri) = viewModelScope.launch {
         _message.value = settingsRepository.updateDownloadLocation(uri)
@@ -73,9 +87,9 @@ class SettingsViewModel @Inject constructor(
             )
     }
 
-    fun resetDownloadLocation() = viewModelScope.launch {
+    fun useDefaultDownloadLocation() = viewModelScope.launch {
         settingsRepository.clearDownloadLocation()
-        _message.value = "Download location reset to the app-managed folder."
+        _message.value = "Download location set to /storage/emulated/0/Download"
     }
 
     fun consumeMessage() {

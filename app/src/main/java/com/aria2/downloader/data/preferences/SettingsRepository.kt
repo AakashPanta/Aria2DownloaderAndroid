@@ -28,6 +28,10 @@ private val Context.settingsDataStore by preferencesDataStore(name = "aria2_sett
 class SettingsRepository @Inject constructor(
     @ApplicationContext private val context: Context
 ) {
+    companion object {
+        const val DEFAULT_DOWNLOAD_PATH: String = "/storage/emulated/0/Download"
+    }
+
     private object Keys {
         val THEME_MODE = stringPreferencesKey("theme_mode")
         val MAX_CONCURRENT_DOWNLOADS = intPreferencesKey("max_concurrent_downloads")
@@ -41,6 +45,7 @@ class SettingsRepository @Inject constructor(
         val NOTIFICATIONS_ENABLED = booleanPreferencesKey("notifications_enabled")
         val APP_ICON = stringPreferencesKey("app_icon")
         val RPC_TOKEN = stringPreferencesKey("rpc_token")
+        val DOWNLOAD_LOCATION_PATH = stringPreferencesKey("download_location_path")
         val DOWNLOAD_LOCATION_URI = stringPreferencesKey("download_location_uri")
         val DOWNLOAD_LOCATION_LABEL = stringPreferencesKey("download_location_label")
     }
@@ -83,12 +88,14 @@ class SettingsRepository @Inject constructor(
         context.settingsDataStore.edit {
             it[Keys.DOWNLOAD_LOCATION_URI] = treeUri.toString()
             it[Keys.DOWNLOAD_LOCATION_LABEL] = label
+            it[Keys.DOWNLOAD_LOCATION_PATH] = DEFAULT_DOWNLOAD_PATH
         }
         label
     }
 
     suspend fun clearDownloadLocation() {
         context.settingsDataStore.edit {
+            it[Keys.DOWNLOAD_LOCATION_PATH] = DEFAULT_DOWNLOAD_PATH
             it.remove(Keys.DOWNLOAD_LOCATION_URI)
             it.remove(Keys.DOWNLOAD_LOCATION_LABEL)
         }
@@ -130,6 +137,7 @@ class SettingsRepository @Inject constructor(
         notificationsEnabled = preferences[Keys.NOTIFICATIONS_ENABLED] ?: true,
         appIcon = enumValueOfOrNull(preferences[Keys.APP_ICON], AppIcon.DEFAULT),
         rpcToken = preferences[Keys.RPC_TOKEN] ?: "aakash-aria2-rpc",
+        downloadLocationPath = preferences[Keys.DOWNLOAD_LOCATION_PATH] ?: DEFAULT_DOWNLOAD_PATH,
         downloadLocationUri = preferences[Keys.DOWNLOAD_LOCATION_URI],
         downloadLocationLabel = preferences[Keys.DOWNLOAD_LOCATION_LABEL]
     )

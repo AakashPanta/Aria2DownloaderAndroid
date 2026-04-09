@@ -3,6 +3,7 @@ package com.aria2.downloader.domain.engine
 import android.content.Context
 import android.os.Build
 import com.aria2.downloader.data.preferences.SettingsRepository
+import com.aria2.downloader.domain.model.AppSettings
 import dagger.hilt.android.qualifiers.ApplicationContext
 import java.io.File
 import javax.inject.Inject
@@ -20,19 +21,29 @@ class Aria2ProcessManager @Inject constructor(
     @Volatile
     private var process: Process? = null
 
-    val downloadDirectory: File
+    private val stagingDirectory: File
         get() = File(
             context.getExternalFilesDir(android.os.Environment.DIRECTORY_DOWNLOADS),
             "Aria2Downloads"
         ).apply { mkdirs() }
 
+    fun resolveDownloadDirectory(settings: AppSettings): File {
+        return if (settings.downloadLocationUri == null) {
+            File(settings.downloadLocationPath).apply { mkdirs() }
+        } else {
+            stagingDirectory
+        }
+    }
+
     suspend fun ensureRunning() = withContext(Dispatchers.IO) {
         if (rpcClient.isAvailable()) {
             return@withContext
         }
+
         val binary = installBinaryIfNeeded()
         val wrapper = installWrapper(binary)
         val settings = settingsRepository.currentSettings()
+        val targetDownloadDir = resolveDownloadDirectory(settings)
 
         if (process?.isAlive == true) {
             process?.destroy()
@@ -43,13 +54,12 @@ class Aria2ProcessManager @Inject constructor(
         val sessionFile = File(homeDir, "session.txt").apply { if (!exists()) createNewFile() }
         val logFile = File(homeDir, "aria2.log")
 
-        val command = mutableListOf(
-            wrapper.absolutePath,
+        val aria2Args = mutableListOf(
             "--enable-rpc=true",
             "--rpc-listen-all=false",
             "--rpc-listen-port=6800",
             "--rpc-secret=${settings.rpcToken}",
-            "--dir=${downloadDirectory.absolutePath}",
+            "--dir=${targetDownloadDir.absolutePath}",
             "--continue=true",
             "--auto-file-renaming=true",
             "--allow-overwrite=false",
@@ -74,6 +84,10 @@ class Aria2ProcessManager @Inject constructor(
             "--seed-time=0",
             "--log=${logFile.absolutePath}"
         )
+
+        val command = mutableListOf("/system/bin/sh", wrapper.absolutePath).apply {
+            addAll(aria2Args)
+        }
 
         process = ProcessBuilder(command)
             .directory(homeDir)
@@ -112,6 +126,12 @@ class Aria2ProcessManager @Inject constructor(
             }
         }
         outFile.setExecutable(true)
+
+        val wrapper = File(binDir, "aria2-wrapper.sh")
+        if (wrapper.exists()) {
+            wrapper.setExecutable(true)
+        }
+
         return outFile
     }
 

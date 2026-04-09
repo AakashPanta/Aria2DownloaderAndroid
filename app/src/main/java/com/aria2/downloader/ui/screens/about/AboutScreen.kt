@@ -3,7 +3,10 @@ package com.aria2.downloader.ui.screens.about
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -24,7 +27,10 @@ fun AboutScreen(paddingTop: androidx.compose.ui.unit.Dp) {
                 .fillMaxSize()
                 .padding(inner)
                 .padding(top = paddingTop)
-                .padding(16.dp),
+                .verticalScroll(rememberScrollState())
+                .navigationBarsPadding()
+                .padding(16.dp)
+                .padding(bottom = 100.dp),
             verticalArrangement = Arrangement.spacedBy(14.dp)
         ) {
             Card(
@@ -42,6 +48,16 @@ fun AboutScreen(paddingTop: androidx.compose.ui.unit.Dp) {
                     Text(
                         "Production-style Android download manager with aria2 JSON-RPC, multi-connection direct downloads, BitTorrent, magnet and Metalink support, foreground syncing and a Material 3 UI.",
                         style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Text(
+                        "Default public save path: /storage/emulated/0/Download",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Text(
+                        "You can switch to a custom folder from Settings using the document tree picker.",
+                        style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
