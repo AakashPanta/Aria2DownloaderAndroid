@@ -1,0 +1,1278 @@
+name: Replace Fixed Files Automatically
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  replace-files:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Replace files with fixed versions
+        shell: bash
+        run: |
+          set -e
+
+          mkdir -p app/src/main/java/com/aria2/downloader/domain/engine
+          mkdir -p app/src/main/java/com/aria2/downloader/ui/components
+          mkdir -p app/src/main/java/com/aria2/downloader/ui/screens/about
+          mkdir -p app/src/main/java/com/aria2/downloader/ui/screens/active
+          mkdir -p app/src/main/java/com/aria2/downloader/ui/screens/detail
+          mkdir -p app/src/main/java/com/aria2/downloader/ui/screens/history
+          mkdir -p app/src/main/java/com/aria2/downloader/ui/screens/home
+          mkdir -p app/src/main/java/com/aria2/downloader/ui/screens/newdownload
+          mkdir -p app/src/main/java/com/aria2/downloader/ui/screens/settings
+
+          cat > app/src/main/java/com/aria2/downloader/domain/engine/Aria2ProcessManager.kt <<'EOF'
+          package com.aria2.downloader.domain.engine
+
+          import android.content.Context
+          import android.os.Build
+          import com.aria2.downloader.data.preferences.SettingsRepository
+          import dagger.hilt.android.qualifiers.ApplicationContext
+          import java.io.File
+          import javax.inject.Inject
+          import javax.inject.Singleton
+          import kotlinx.coroutines.Dispatchers
+          import kotlinx.coroutines.delay
+          import kotlinx.coroutines.withContext
+
+          @Singleton
+          class Aria2ProcessManager @Inject constructor(
+              @ApplicationContext private val context: Context,
+              private val settingsRepository: SettingsRepository,
+              private val rpcClient: Aria2RpcClient
+          ) {
+              @Volatile
+              private var process: Process? = null
+
+              val downloadDirectory: File
+                  get() = File(
+                      context.getExternalFilesDir(android.os.Environment.DIRECTORY_DOWNLOADS),
+                      "Aria2Downloads"
+                  ).apply { mkdirs() }
+
+              suspend fun ensureRunning() = withContext(Dispatchers.IO) {
+                  if (rpcClient.isAvailable()) {
+                      return@withContext
+                  }
+                  val binary = installBinaryIfNeeded()
+                  val wrapper = installWrapper(binary)
+                  val settings = settingsRepository.currentSettings()
+
+                  if (process?.isAlive == true) {
+                      process?.destroy()
+                      process = null
+                  }
+
+                  val homeDir = File(context.filesDir, "aria2/home").apply { mkdirs() }
+                  val sessionFile = File(homeDir, "session.txt").apply { if (!exists()) createNewFile() }
+                  val logFile = File(homeDir, "aria2.log")
+
+                  val command = mutableListOf(
+                      wrapper.absolutePath,
+                      "--enable-rpc=true",
+                      "--rpc-listen-all=false",
+                      "--rpc-listen-port=6800",
+                      "--rpc-secret=${settings.rpcToken}",
+                      "--dir=${downloadDirectory.absolutePath}",
+                      "--continue=true",
+                      "--auto-file-renaming=true",
+                      "--allow-overwrite=false",
+                      "--max-concurrent-downloads=${settings.maxConcurrentDownloads}",
+                      "--split=${settings.split}",
+                      "--max-connection-per-server=${settings.maxConnectionPerServer}",
+                      "--min-split-size=${settings.minSplitSizeMb}M",
+                      "--file-allocation=none",
+                      "--summary-interval=0",
+                      "--disk-cache=16M",
+                      "--enable-dht=${settings.enableDht}",
+                      "--enable-peer-exchange=${settings.peerExchange}",
+                      "--bt-enable-lpd=${settings.localPeerDiscovery}",
+                      "--bt-require-crypto=${settings.requireEncryption}",
+                      "--follow-torrent=true",
+                      "--follow-metalink=true",
+                      "--bt-save-metadata=true",
+                      "--rpc-save-upload-metadata=true",
+                      "--save-session=${sessionFile.absolutePath}",
+                      "--input-file=${sessionFile.absolutePath}",
+                      "--save-session-interval=30",
+                      "--seed-time=0",
+                      "--log=${logFile.absolutePath}"
+                  )
+
+                  process = ProcessBuilder(command)
+                      .directory(homeDir)
+                      .redirectErrorStream(true)
+                      .redirectOutput(ProcessBuilder.Redirect.appendTo(logFile))
+                      .start()
+
+                  repeat(30) {
+                      if (rpcClient.isAvailable()) {
+                          return@withContext
+                      }
+                      delay(300)
+                  }
+
+                  throw IllegalStateException(
+                      "aria2 daemon did not start. This bundled build currently supports arm64-v8a devices only."
+                  )
+              }
+
+              suspend fun stop() = withContext(Dispatchers.IO) {
+                  runCatching { rpcClient.shutdown() }
+                  process?.destroy()
+                  process = null
+              }
+
+              private fun installBinaryIfNeeded(): File {
+                  require(
+                      Build.SUPPORTED_ABIS.any { it.equals("arm64-v8a", ignoreCase = true) }
+                  ) { "The bundled aria2 binary only supports arm64-v8a devices." }
+
+                  val binDir = File(context.filesDir, "aria2/bin").apply { mkdirs() }
+                  val outFile = File(binDir, "aria2c")
+                  if (!outFile.exists() || outFile.length() == 0L) {
+                      context.assets.open("bin/aria2c-arm64-v8a").use { input ->
+                          outFile.outputStream().use { output -> input.copyTo(output) }
+                      }
+                  }
+                  outFile.setExecutable(true)
+                  return outFile
+              }
+
+              private fun installWrapper(binary: File): File {
+                  val wrapper = File(binary.parentFile, "aria2-wrapper.sh")
+                  val script = """
+                      |#!/system/bin/sh
+                      |BIN_DIR="${'$'}(CDPATH= cd -- "${'$'}(dirname -- "${'$'}0")" && pwd)"
+                      |DNS1="${'$'}(getprop net.dns1)"
+                      |DNS2="${'$'}(getprop net.dns2)"
+                      |if [ -d /etc/security/cacerts ]; then
+                      |  cat /etc/security/cacerts/* | "${'$'}BIN_DIR/aria2c" \
+                      |    --ca-certificate=/proc/self/fd/0 \
+                      |    --async-dns \
+                      |    --async-dns-server="${'$'}{DNS1},${'$'}{DNS2}" \
+                      |    "${'$'}@"
+                      |else
+                      |  "${'$'}BIN_DIR/aria2c" "${'$'}@"
+                      |fi
+                  """.trimMargin()
+
+                  if (!wrapper.exists() || wrapper.readText() != script) {
+                      wrapper.writeText(script)
+                  }
+                  wrapper.setExecutable(true)
+                  return wrapper
+              }
+          }
+          EOF
+
+          cat > app/src/main/java/com/aria2/downloader/ui/components/DownloadCard.kt <<'EOF'
+          package com.aria2.downloader.ui.components
+
+          import androidx.compose.foundation.clickable
+          import androidx.compose.foundation.layout.Arrangement
+          import androidx.compose.foundation.layout.Column
+          import androidx.compose.foundation.layout.Row
+          import androidx.compose.foundation.layout.Spacer
+          import androidx.compose.foundation.layout.fillMaxWidth
+          import androidx.compose.foundation.layout.height
+          import androidx.compose.foundation.layout.padding
+          import androidx.compose.material.icons.Icons
+          import androidx.compose.material.icons.filled.Close
+          import androidx.compose.material.icons.filled.Pause
+          import androidx.compose.material.icons.filled.PlayArrow
+          import androidx.compose.material.icons.filled.Refresh
+          import androidx.compose.material3.AssistChip
+          import androidx.compose.material3.Card
+          import androidx.compose.material3.CardDefaults
+          import androidx.compose.material3.Icon
+          import androidx.compose.material3.IconButton
+          import androidx.compose.material3.LinearProgressIndicator
+          import androidx.compose.material3.MaterialTheme
+          import androidx.compose.material3.Text
+          import androidx.compose.runtime.Composable
+          import androidx.compose.ui.Modifier
+          import androidx.compose.ui.unit.dp
+          import com.aria2.downloader.domain.model.DownloadInfo
+          import com.aria2.downloader.domain.model.DownloadStatus
+
+          @Composable
+          fun DownloadCard(
+              download: DownloadInfo,
+              onClick: () -> Unit,
+              onPause: (() -> Unit)? = null,
+              onResume: (() -> Unit)? = null,
+              onCancel: (() -> Unit)? = null,
+              onRetry: (() -> Unit)? = null
+          ) {
+              Card(
+                  modifier = Modifier
+                      .fillMaxWidth()
+                      .clickable { onClick() },
+                  colors = CardDefaults.cardColors(
+                      containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f)
+                  )
+              ) {
+                  Column(
+                      modifier = Modifier.padding(16.dp),
+                      verticalArrangement = Arrangement.spacedBy(10.dp)
+                  ) {
+                      Row(
+                          modifier = Modifier.fillMaxWidth(),
+                          horizontalArrangement = Arrangement.SpaceBetween
+                      ) {
+                          Column(modifier = Modifier.weight(1f)) {
+                              Text(
+                                  download.fileName,
+                                  style = MaterialTheme.typography.titleMedium,
+                                  maxLines = 2
+                              )
+                              Spacer(modifier = Modifier.height(4.dp))
+                              Text(
+                                  "${download.formattedCompletedSize()} / ${download.formattedTotalSize()}",
+                                  style = MaterialTheme.typography.bodySmall,
+                                  color = MaterialTheme.colorScheme.onSurfaceVariant
+                              )
+                          }
+                          AssistChip(
+                              onClick = onClick,
+                              label = { Text(download.formattedStatus()) }
+                          )
+                      }
+
+                      LinearProgressIndicator(
+                          progress = { download.progress.fraction },
+                          modifier = Modifier.fillMaxWidth()
+                      )
+
+                      Row(
+                          modifier = Modifier.fillMaxWidth(),
+                          horizontalArrangement = Arrangement.SpaceBetween
+                      ) {
+                          Text(
+                              "${download.progressPercent}% • ${download.progress.formattedSpeed()}",
+                              style = MaterialTheme.typography.bodySmall,
+                              color = MaterialTheme.colorScheme.onSurfaceVariant
+                          )
+                          Text(
+                              "ETA ${download.progress.formattedEta()}",
+                              style = MaterialTheme.typography.bodySmall,
+                              color = MaterialTheme.colorScheme.onSurfaceVariant
+                          )
+                      }
+
+                      Row(
+                          modifier = Modifier.fillMaxWidth(),
+                          horizontalArrangement = Arrangement.End
+                      ) {
+                          when (download.status) {
+                              DownloadStatus.DOWNLOADING,
+                              DownloadStatus.METADATA,
+                              DownloadStatus.QUEUED,
+                              DownloadStatus.VALIDATING -> {
+                                  if (onPause != null) {
+                                      IconButton(onClick = onPause) {
+                                          Icon(Icons.Default.Pause, contentDescription = "Pause")
+                                      }
+                                  }
+                                  if (onCancel != null) {
+                                      IconButton(onClick = onCancel) {
+                                          Icon(Icons.Default.Close, contentDescription = "Cancel")
+                                      }
+                                  }
+                              }
+
+                              DownloadStatus.PAUSED -> {
+                                  if (onResume != null) {
+                                      IconButton(onClick = onResume) {
+                                          Icon(Icons.Default.PlayArrow, contentDescription = "Resume")
+                                      }
+                                  }
+                                  if (onCancel != null) {
+                                      IconButton(onClick = onCancel) {
+                                          Icon(Icons.Default.Close, contentDescription = "Cancel")
+                                      }
+                                  }
+                              }
+
+                              DownloadStatus.FAILED -> {
+                                  if (onRetry != null) {
+                                      IconButton(onClick = onRetry) {
+                                          Icon(Icons.Default.Refresh, contentDescription = "Retry")
+                                      }
+                                  }
+                              }
+
+                              else -> Unit
+                          }
+                      }
+                  }
+              }
+          }
+          EOF
+
+          cat > app/src/main/java/com/aria2/downloader/ui/screens/about/AboutScreen.kt <<'EOF'
+          package com.aria2.downloader.ui.screens.about
+
+          import androidx.compose.foundation.layout.Arrangement
+          import androidx.compose.foundation.layout.Column
+          import androidx.compose.foundation.layout.fillMaxSize
+          import androidx.compose.foundation.layout.padding
+          import androidx.compose.material3.Card
+          import androidx.compose.material3.CardDefaults
+          import androidx.compose.material3.ExperimentalMaterial3Api
+          import androidx.compose.material3.MaterialTheme
+          import androidx.compose.material3.Scaffold
+          import androidx.compose.material3.Text
+          import androidx.compose.material3.TopAppBar
+          import androidx.compose.runtime.Composable
+          import androidx.compose.ui.Modifier
+          import androidx.compose.ui.unit.dp
+
+          @OptIn(ExperimentalMaterial3Api::class)
+          @Composable
+          fun AboutScreen(paddingTop: androidx.compose.ui.unit.Dp) {
+              Scaffold(topBar = { TopAppBar(title = { Text("About") }) }) { inner ->
+                  Column(
+                      modifier = Modifier
+                          .fillMaxSize()
+                          .padding(inner)
+                          .padding(top = paddingTop)
+                          .padding(16.dp),
+                      verticalArrangement = Arrangement.spacedBy(14.dp)
+                  ) {
+                      Card(
+                          colors = CardDefaults.cardColors(
+                              containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f)
+                          )
+                      ) {
+                          Column(
+                              modifier = Modifier.padding(16.dp),
+                              verticalArrangement = Arrangement.spacedBy(10.dp)
+                          ) {
+                              Text("Aria2 Downloader", style = MaterialTheme.typography.headlineSmall)
+                              Text("Version 1.1.0", style = MaterialTheme.typography.titleMedium)
+                              Text("Developer: Aakash Panta", style = MaterialTheme.typography.bodyLarge)
+                              Text(
+                                  "Production-style Android download manager with aria2 JSON-RPC, multi-connection direct downloads, BitTorrent, magnet and Metalink support, foreground syncing and a Material 3 UI.",
+                                  style = MaterialTheme.typography.bodyMedium,
+                                  color = MaterialTheme.colorScheme.onSurfaceVariant
+                              )
+                          }
+                      }
+                  }
+              }
+          }
+          EOF
+
+          cat > app/src/main/java/com/aria2/downloader/ui/screens/active/ActiveScreen.kt <<'EOF'
+          package com.aria2.downloader.ui.screens.active
+
+          import androidx.compose.foundation.layout.Arrangement
+          import androidx.compose.foundation.layout.PaddingValues
+          import androidx.compose.foundation.layout.Spacer
+          import androidx.compose.foundation.layout.fillMaxSize
+          import androidx.compose.foundation.layout.height
+          import androidx.compose.foundation.layout.padding
+          import androidx.compose.foundation.lazy.LazyColumn
+          import androidx.compose.foundation.lazy.items
+          import androidx.compose.material.icons.Icons
+          import androidx.compose.material.icons.filled.Add
+          import androidx.compose.material3.ExperimentalMaterial3Api
+          import androidx.compose.material3.FloatingActionButton
+          import androidx.compose.material3.Icon
+          import androidx.compose.material3.MaterialTheme
+          import androidx.compose.material3.Scaffold
+          import androidx.compose.material3.Text
+          import androidx.compose.material3.TopAppBar
+          import androidx.compose.runtime.Composable
+          import androidx.compose.runtime.collectAsState
+          import androidx.compose.runtime.getValue
+          import androidx.compose.ui.Modifier
+          import androidx.compose.ui.unit.dp
+          import com.aria2.downloader.domain.model.DownloadStatus
+          import com.aria2.downloader.ui.components.DownloadCard
+
+          @OptIn(ExperimentalMaterial3Api::class)
+          @Composable
+          fun ActiveScreen(
+              paddingTop: androidx.compose.ui.unit.Dp,
+              viewModel: ActiveViewModel,
+              onNewDownload: () -> Unit,
+              onOpenDetail: (String) -> Unit
+          ) {
+              val downloads by viewModel.downloads.collectAsState()
+
+              Scaffold(
+                  topBar = { TopAppBar(title = { Text("Active downloads") }) },
+                  floatingActionButton = {
+                      FloatingActionButton(onClick = onNewDownload) {
+                          Icon(Icons.Default.Add, contentDescription = "Add")
+                      }
+                  }
+              ) { inner ->
+                  LazyColumn(
+                      modifier = Modifier
+                          .fillMaxSize()
+                          .padding(inner)
+                          .padding(top = paddingTop)
+                          .padding(horizontal = 16.dp),
+                      contentPadding = PaddingValues(bottom = 96.dp),
+                      verticalArrangement = Arrangement.spacedBy(12.dp)
+                  ) {
+                      item { Spacer(modifier = Modifier.height(4.dp)) }
+
+                      if (downloads.isEmpty()) {
+                          item {
+                              Text(
+                                  "Nothing is running. Add a new job to start aria2 in the foreground service.",
+                                  style = MaterialTheme.typography.bodyMedium,
+                                  color = MaterialTheme.colorScheme.onSurfaceVariant
+                              )
+                          }
+                      } else {
+                          items(downloads) { item ->
+                              DownloadCard(
+                                  download = item,
+                                  onClick = { onOpenDetail(item.id) },
+                                  onPause = if (item.status != DownloadStatus.PAUSED) ({ viewModel.pause(item) }) else null,
+                                  onResume = if (item.status == DownloadStatus.PAUSED) ({ viewModel.resume(item) }) else null,
+                                  onCancel = { viewModel.cancel(item) },
+                                  onRetry = { viewModel.retry(item) }
+                              )
+                          }
+                      }
+                  }
+              }
+          }
+          EOF
+
+          cat > app/src/main/java/com/aria2/downloader/ui/screens/detail/DetailScreen.kt <<'EOF'
+          package com.aria2.downloader.ui.screens.detail
+
+          import androidx.compose.foundation.layout.Arrangement
+          import androidx.compose.foundation.layout.Column
+          import androidx.compose.foundation.layout.Row
+          import androidx.compose.foundation.layout.fillMaxSize
+          import androidx.compose.foundation.layout.fillMaxWidth
+          import androidx.compose.foundation.layout.padding
+          import androidx.compose.foundation.rememberScrollState
+          import androidx.compose.foundation.verticalScroll
+          import androidx.compose.material3.Button
+          import androidx.compose.material3.Card
+          import androidx.compose.material3.CardDefaults
+          import androidx.compose.material3.ExperimentalMaterial3Api
+          import androidx.compose.material3.LinearProgressIndicator
+          import androidx.compose.material3.MaterialTheme
+          import androidx.compose.material3.OutlinedButton
+          import androidx.compose.material3.Scaffold
+          import androidx.compose.material3.Text
+          import androidx.compose.material3.TopAppBar
+          import androidx.compose.runtime.Composable
+          import androidx.compose.runtime.collectAsState
+          import androidx.compose.runtime.getValue
+          import androidx.compose.ui.Modifier
+          import androidx.compose.ui.unit.dp
+          import com.aria2.downloader.domain.model.DownloadStatus
+
+          @OptIn(ExperimentalMaterial3Api::class)
+          @Composable
+          fun DetailScreen(
+              viewModel: DetailViewModel,
+              onNavigateBack: () -> Unit
+          ) {
+              val download by viewModel.download.collectAsState()
+
+              Scaffold(
+                  topBar = {
+                      TopAppBar(
+                          title = { Text(download?.fileName ?: "Download details") }
+                      )
+                  }
+              ) { inner ->
+                  val item = download
+                  if (item == null) {
+                      Column(
+                          modifier = Modifier
+                              .fillMaxSize()
+                              .padding(inner)
+                              .padding(24.dp)
+                      ) {
+                          Text("Loading…")
+                      }
+                  } else {
+                      Column(
+                          modifier = Modifier
+                              .fillMaxSize()
+                              .padding(inner)
+                              .verticalScroll(rememberScrollState())
+                              .padding(16.dp),
+                          verticalArrangement = Arrangement.spacedBy(14.dp)
+                      ) {
+                          Card(
+                              colors = CardDefaults.cardColors(
+                                  containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
+                              )
+                          ) {
+                              Column(
+                                  modifier = Modifier.padding(16.dp),
+                                  verticalArrangement = Arrangement.spacedBy(10.dp)
+                              ) {
+                                  Text(item.fileName, style = MaterialTheme.typography.titleLarge)
+                                  Text(
+                                      item.source,
+                                      style = MaterialTheme.typography.bodySmall,
+                                      color = MaterialTheme.colorScheme.onSurfaceVariant
+                                  )
+                                  LinearProgressIndicator(
+                                      progress = { item.progress.fraction },
+                                      modifier = Modifier.fillMaxWidth()
+                                  )
+                                  Text("${item.progressPercent}% • ${item.formattedCompletedSize()} / ${item.formattedTotalSize()}")
+                              }
+                          }
+
+                          DetailPair("Status", item.formattedStatus())
+                          DetailPair("Connections", item.formattedConnections())
+                          DetailPair("Speed", item.progress.formattedSpeed())
+                          DetailPair("ETA", item.progress.formattedEta())
+                          DetailPair("Source type", item.sourceType.name)
+                          DetailPair("Destination", item.destinationDir)
+                          item.infoHash?.let { DetailPair("Info hash", it) }
+                          item.errorMessage?.let { DetailPair("Error", it) }
+
+                          Row(
+                              modifier = Modifier.fillMaxWidth(),
+                              horizontalArrangement = Arrangement.spacedBy(12.dp)
+                          ) {
+                              when (item.status) {
+                                  DownloadStatus.DOWNLOADING,
+                                  DownloadStatus.METADATA,
+                                  DownloadStatus.QUEUED,
+                                  DownloadStatus.VALIDATING -> {
+                                      OutlinedButton(
+                                          onClick = { viewModel.pause(item) },
+                                          modifier = Modifier.weight(1f)
+                                      ) {
+                                          Text("Pause")
+                                      }
+                                      OutlinedButton(
+                                          onClick = { viewModel.cancel(item) },
+                                          modifier = Modifier.weight(1f)
+                                      ) {
+                                          Text("Cancel")
+                                      }
+                                  }
+
+                                  DownloadStatus.PAUSED -> {
+                                      Button(
+                                          onClick = { viewModel.resume(item) },
+                                          modifier = Modifier.weight(1f)
+                                      ) {
+                                          Text("Resume")
+                                      }
+                                      OutlinedButton(
+                                          onClick = { viewModel.cancel(item) },
+                                          modifier = Modifier.weight(1f)
+                                      ) {
+                                          Text("Cancel")
+                                      }
+                                  }
+
+                                  DownloadStatus.FAILED -> {
+                                      Button(
+                                          onClick = { viewModel.retry(item) },
+                                          modifier = Modifier.weight(1f)
+                                      ) {
+                                          Text("Retry")
+                                      }
+                                      OutlinedButton(
+                                          onClick = { viewModel.cancel(item) },
+                                          modifier = Modifier.weight(1f)
+                                      ) {
+                                          Text("Dismiss")
+                                      }
+                                  }
+
+                                  else -> Unit
+                              }
+                          }
+                      }
+                  }
+              }
+          }
+
+          @Composable
+          private fun DetailPair(label: String, value: String) {
+              Card(
+                  colors = CardDefaults.cardColors(
+                      containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f)
+                  )
+              ) {
+                  Column(
+                      modifier = Modifier.padding(16.dp),
+                      verticalArrangement = Arrangement.spacedBy(4.dp)
+                  ) {
+                      Text(
+                          label,
+                          style = MaterialTheme.typography.labelMedium,
+                          color = MaterialTheme.colorScheme.onSurfaceVariant
+                      )
+                      Text(value, style = MaterialTheme.typography.bodyMedium)
+                  }
+              }
+          }
+          EOF
+
+          cat > app/src/main/java/com/aria2/downloader/ui/screens/history/HistoryScreen.kt <<'EOF'
+          package com.aria2.downloader.ui.screens.history
+
+          import androidx.compose.foundation.layout.Arrangement
+          import androidx.compose.foundation.layout.PaddingValues
+          import androidx.compose.foundation.layout.Spacer
+          import androidx.compose.foundation.layout.fillMaxSize
+          import androidx.compose.foundation.layout.height
+          import androidx.compose.foundation.layout.padding
+          import androidx.compose.foundation.lazy.LazyColumn
+          import androidx.compose.foundation.lazy.items
+          import androidx.compose.material3.Button
+          import androidx.compose.material3.ExperimentalMaterial3Api
+          import androidx.compose.material3.MaterialTheme
+          import androidx.compose.material3.Scaffold
+          import androidx.compose.material3.Text
+          import androidx.compose.material3.TopAppBar
+          import androidx.compose.runtime.Composable
+          import androidx.compose.runtime.collectAsState
+          import androidx.compose.runtime.getValue
+          import androidx.compose.ui.Modifier
+          import androidx.compose.ui.unit.dp
+          import com.aria2.downloader.ui.components.DownloadCard
+
+          @OptIn(ExperimentalMaterial3Api::class)
+          @Composable
+          fun HistoryScreen(
+              paddingTop: androidx.compose.ui.unit.Dp,
+              viewModel: HistoryViewModel,
+              onOpenDetail: (String) -> Unit
+          ) {
+              val downloads by viewModel.downloads.collectAsState()
+
+              Scaffold(
+                  topBar = { TopAppBar(title = { Text("Completed & failed") }) }
+              ) { inner ->
+                  LazyColumn(
+                      modifier = Modifier
+                          .fillMaxSize()
+                          .padding(inner)
+                          .padding(top = paddingTop)
+                          .padding(horizontal = 16.dp),
+                      contentPadding = PaddingValues(bottom = 96.dp),
+                      verticalArrangement = Arrangement.spacedBy(12.dp)
+                  ) {
+                      item {
+                          Spacer(modifier = Modifier.height(4.dp))
+                          if (downloads.any { it.status.name == "COMPLETED" }) {
+                              Button(onClick = { viewModel.clearCompleted() }) {
+                                  Text("Clear completed")
+                              }
+                          }
+                      }
+
+                      if (downloads.isEmpty()) {
+                          item {
+                              Text(
+                                  "Completed jobs and failures will show up here.",
+                                  style = MaterialTheme.typography.bodyMedium,
+                                  color = MaterialTheme.colorScheme.onSurfaceVariant
+                              )
+                          }
+                      } else {
+                          items(downloads) { item ->
+                              DownloadCard(
+                                  download = item,
+                                  onClick = { onOpenDetail(item.id) },
+                                  onCancel = { viewModel.delete(item) }
+                              )
+                          }
+                      }
+                  }
+              }
+          }
+          EOF
+
+          cat > app/src/main/java/com/aria2/downloader/ui/screens/home/HomeScreen.kt <<'EOF'
+          package com.aria2.downloader.ui.screens.home
+
+          import androidx.compose.foundation.layout.Arrangement
+          import androidx.compose.foundation.layout.Column
+          import androidx.compose.foundation.layout.PaddingValues
+          import androidx.compose.foundation.layout.Spacer
+          import androidx.compose.foundation.layout.fillMaxSize
+          import androidx.compose.foundation.layout.fillMaxWidth
+          import androidx.compose.foundation.layout.height
+          import androidx.compose.foundation.layout.padding
+          import androidx.compose.foundation.lazy.LazyColumn
+          import androidx.compose.foundation.lazy.items
+          import androidx.compose.material.icons.Icons
+          import androidx.compose.material.icons.filled.Add
+          import androidx.compose.material.icons.filled.Download
+          import androidx.compose.material3.Button
+          import androidx.compose.material3.ExperimentalMaterial3Api
+          import androidx.compose.material3.FloatingActionButton
+          import androidx.compose.material3.Icon
+          import androidx.compose.material3.MaterialTheme
+          import androidx.compose.material3.Scaffold
+          import androidx.compose.material3.Text
+          import androidx.compose.material3.TopAppBar
+          import androidx.compose.runtime.Composable
+          import androidx.compose.runtime.collectAsState
+          import androidx.compose.runtime.getValue
+          import androidx.compose.ui.Modifier
+          import androidx.compose.ui.unit.dp
+          import com.aria2.downloader.domain.model.DownloadProgress
+          import com.aria2.downloader.ui.components.DownloadCard
+          import com.aria2.downloader.ui.components.MetricCard
+
+          @OptIn(ExperimentalMaterial3Api::class)
+          @Composable
+          fun HomeScreen(
+              paddingTop: androidx.compose.ui.unit.Dp,
+              viewModel: HomeViewModel,
+              onNewDownload: () -> Unit,
+              onOpenActive: () -> Unit,
+              onOpenCompleted: () -> Unit,
+              onOpenDetail: (String) -> Unit
+          ) {
+              val state by viewModel.dashboardState.collectAsState()
+
+              Scaffold(
+                  topBar = {
+                      TopAppBar(title = { Text("Aria2 Downloader") })
+                  },
+                  floatingActionButton = {
+                      FloatingActionButton(onClick = onNewDownload) {
+                          Icon(Icons.Default.Add, contentDescription = "Add")
+                      }
+                  }
+              ) { inner ->
+                  LazyColumn(
+                      modifier = Modifier
+                          .fillMaxSize()
+                          .padding(inner)
+                          .padding(top = paddingTop)
+                          .padding(horizontal = 16.dp),
+                      contentPadding = PaddingValues(bottom = 96.dp),
+                      verticalArrangement = Arrangement.spacedBy(14.dp)
+                  ) {
+                      item {
+                          Spacer(modifier = Modifier.height(4.dp))
+                          Text(
+                              "Fast direct links, torrents and metalinks powered by aria2 RPC.",
+                              style = MaterialTheme.typography.bodyMedium,
+                              color = MaterialTheme.colorScheme.onSurfaceVariant
+                          )
+                      }
+
+                      item {
+                          androidx.compose.foundation.layout.Row(
+                              modifier = Modifier.fillMaxWidth(),
+                              horizontalArrangement = Arrangement.spacedBy(12.dp)
+                          ) {
+                              MetricCard(
+                                  title = "Active",
+                                  value = state.active.size.toString(),
+                                  subtitle = "Live queue",
+                                  modifier = Modifier.weight(1f)
+                              )
+                              MetricCard(
+                                  title = "Completed",
+                                  value = state.completed.size.toString(),
+                                  subtitle = "Finished jobs",
+                                  modifier = Modifier.weight(1f)
+                              )
+                          }
+                      }
+
+                      item {
+                          androidx.compose.foundation.layout.Row(
+                              modifier = Modifier.fillMaxWidth(),
+                              horizontalArrangement = Arrangement.spacedBy(12.dp)
+                          ) {
+                              MetricCard(
+                                  title = "Speed",
+                                  value = DownloadProgress.formatBytes(state.totalSpeedBytes) + "/s",
+                                  subtitle = "Combined throughput",
+                                  modifier = Modifier.weight(1f)
+                              )
+                              MetricCard(
+                                  title = "Library",
+                                  value = state.all.size.toString(),
+                                  subtitle = "Tracked downloads",
+                                  modifier = Modifier.weight(1f)
+                              )
+                          }
+                      }
+
+                      item {
+                          androidx.compose.foundation.layout.Row(
+                              horizontalArrangement = Arrangement.spacedBy(12.dp)
+                          ) {
+                              Button(onClick = onOpenActive, modifier = Modifier.weight(1f)) {
+                                  Icon(Icons.Default.Download, contentDescription = null)
+                                  Text(" Active")
+                              }
+                              Button(onClick = onOpenCompleted, modifier = Modifier.weight(1f)) {
+                                  Text("Completed")
+                              }
+                          }
+                      }
+
+                      if (state.active.isEmpty()) {
+                          item {
+                              Column(
+                                  modifier = Modifier
+                                      .fillMaxWidth()
+                                      .padding(vertical = 24.dp),
+                                  verticalArrangement = Arrangement.spacedBy(12.dp)
+                              ) {
+                                  Text(
+                                      "No active downloads right now.",
+                                      style = MaterialTheme.typography.titleMedium
+                                  )
+                                  Text(
+                                      "The old “validating URL” dead-end is gone. Paste a direct link, magnet, torrent or metalink and the request goes straight into aria2.",
+                                      style = MaterialTheme.typography.bodyMedium,
+                                      color = MaterialTheme.colorScheme.onSurfaceVariant
+                                  )
+                                  Button(onClick = onNewDownload) {
+                                      Text("Add a download")
+                                  }
+                              }
+                          }
+                      } else {
+                          item {
+                              Text("Live queue", style = MaterialTheme.typography.titleLarge)
+                          }
+                          items(state.active.take(3)) { item ->
+                              DownloadCard(
+                                  download = item,
+                                  onClick = { onOpenDetail(item.id) }
+                              )
+                          }
+                      }
+                  }
+              }
+          }
+          EOF
+
+          cat > app/src/main/java/com/aria2/downloader/ui/screens/newdownload/NewDownloadScreen.kt <<'EOF'
+          package com.aria2.downloader.ui.screens.newdownload
+
+          import android.net.Uri
+          import androidx.activity.compose.rememberLauncherForActivityResult
+          import androidx.activity.result.contract.ActivityResultContracts.OpenDocument
+          import androidx.compose.foundation.layout.Arrangement
+          import androidx.compose.foundation.layout.Column
+          import androidx.compose.foundation.layout.fillMaxSize
+          import androidx.compose.foundation.layout.fillMaxWidth
+          import androidx.compose.foundation.layout.height
+          import androidx.compose.foundation.layout.padding
+          import androidx.compose.foundation.rememberScrollState
+          import androidx.compose.foundation.verticalScroll
+          import androidx.compose.material3.Button
+          import androidx.compose.material3.Card
+          import androidx.compose.material3.CardDefaults
+          import androidx.compose.material3.CircularProgressIndicator
+          import androidx.compose.material3.ExperimentalMaterial3Api
+          import androidx.compose.material3.MaterialTheme
+          import androidx.compose.material3.OutlinedTextField
+          import androidx.compose.material3.Scaffold
+          import androidx.compose.material3.SegmentedButton
+          import androidx.compose.material3.SingleChoiceSegmentedButtonRow
+          import androidx.compose.material3.SnackbarHost
+          import androidx.compose.material3.SnackbarHostState
+          import androidx.compose.material3.Text
+          import androidx.compose.material3.TopAppBar
+          import androidx.compose.runtime.Composable
+          import androidx.compose.runtime.LaunchedEffect
+          import androidx.compose.runtime.collectAsState
+          import androidx.compose.runtime.getValue
+          import androidx.compose.runtime.mutableStateOf
+          import androidx.compose.runtime.remember
+          import androidx.compose.runtime.saveable.rememberSaveable
+          import androidx.compose.runtime.setValue
+          import androidx.compose.ui.Modifier
+          import androidx.compose.ui.unit.dp
+          import com.aria2.downloader.domain.model.DownloadSourceType
+
+          @OptIn(ExperimentalMaterial3Api::class)
+          @Composable
+          fun NewDownloadScreen(
+              viewModel: NewDownloadViewModel,
+              onNavigateBack: () -> Unit
+          ) {
+              val input by viewModel.input.collectAsState()
+              val selectedFiles by viewModel.selectedFiles.collectAsState()
+              val uiState by viewModel.uiState.collectAsState()
+              val snackbarHostState = remember { SnackbarHostState() }
+
+              var selectedMode by rememberSaveable { mutableStateOf(0) }
+              var pendingTorrentUri by rememberSaveable { mutableStateOf<String?>(null) }
+              var pendingMetalinkUri by rememberSaveable { mutableStateOf<String?>(null) }
+
+              val torrentPicker = rememberLauncherForActivityResult(OpenDocument()) { uri: Uri? ->
+                  if (uri != null) {
+                      pendingTorrentUri = uri.toString()
+                      viewModel.submitImported(uri, DownloadSourceType.TORRENT)
+                  }
+              }
+
+              val metalinkPicker = rememberLauncherForActivityResult(OpenDocument()) { uri: Uri? ->
+                  if (uri != null) {
+                      pendingMetalinkUri = uri.toString()
+                      viewModel.submitImported(uri, DownloadSourceType.METALINK)
+                  }
+              }
+
+              LaunchedEffect(uiState.errorMessage, uiState.successMessage) {
+                  uiState.errorMessage?.let { snackbarHostState.showSnackbar(it) }
+                  uiState.successMessage?.let {
+                      snackbarHostState.showSnackbar(it)
+                      onNavigateBack()
+                  }
+              }
+
+              Scaffold(
+                  topBar = { TopAppBar(title = { Text("New download") }) },
+                  snackbarHost = { SnackbarHost(snackbarHostState) }
+              ) { inner ->
+                  Column(
+                      modifier = Modifier
+                          .fillMaxSize()
+                          .padding(inner)
+                          .verticalScroll(rememberScrollState())
+                          .padding(16.dp),
+                      verticalArrangement = Arrangement.spacedBy(14.dp)
+                  ) {
+                      Text(
+                          "The request now goes through the same aria2 pipeline that performs the actual download, so valid links no longer get trapped in a separate validation dead-end.",
+                          style = MaterialTheme.typography.bodyMedium,
+                          color = MaterialTheme.colorScheme.onSurfaceVariant
+                      )
+
+                      SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
+                          listOf("Link / magnet", "Torrent file", "Metalink").forEachIndexed { index, label ->
+                              SegmentedButton(
+                                  selected = selectedMode == index,
+                                  onClick = { selectedMode = index },
+                                  shape = androidx.compose.material3.SegmentedButtonDefaults.itemShape(index, 3)
+                              ) {
+                                  Text(label)
+                              }
+                          }
+                      }
+
+                      Card(
+                          colors = CardDefaults.cardColors(
+                              containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f)
+                          )
+                      ) {
+                          Column(
+                              modifier = Modifier.padding(16.dp),
+                              verticalArrangement = Arrangement.spacedBy(12.dp)
+                          ) {
+                              when (selectedMode) {
+                                  0 -> {
+                                      OutlinedTextField(
+                                          value = input,
+                                          onValueChange = viewModel::updateInput,
+                                          modifier = Modifier.fillMaxWidth(),
+                                          minLines = 4,
+                                          label = { Text("Direct link, magnet, torrent URL or metalink URL") }
+                                      )
+                                      OutlinedTextField(
+                                          value = selectedFiles,
+                                          onValueChange = viewModel::updateSelectedFiles,
+                                          modifier = Modifier.fillMaxWidth(),
+                                          label = { Text("Selective files (optional, e.g. 1-3,5)") }
+                                      )
+                                      Button(
+                                          onClick = viewModel::submitLink,
+                                          enabled = !uiState.isBusy,
+                                          modifier = Modifier
+                                              .fillMaxWidth()
+                                              .height(48.dp)
+                                      ) {
+                                          if (uiState.isBusy) {
+                                              CircularProgressIndicator(modifier = Modifier.height(20.dp))
+                                          } else {
+                                              Text("Queue in aria2")
+                                          }
+                                      }
+                                  }
+
+                                  1 -> {
+                                      Text("Choose a .torrent file. If you fill the selective-files box, aria2 will use it as select-file.")
+                                      OutlinedTextField(
+                                          value = selectedFiles,
+                                          onValueChange = viewModel::updateSelectedFiles,
+                                          modifier = Modifier.fillMaxWidth(),
+                                          label = { Text("Selective files (optional)") }
+                                      )
+                                      Button(
+                                          onClick = { torrentPicker.launch(arrayOf("application/x-bittorrent", "*/*")) },
+                                          enabled = !uiState.isBusy,
+                                          modifier = Modifier
+                                              .fillMaxWidth()
+                                              .height(48.dp)
+                                      ) {
+                                          Text("Pick .torrent file")
+                                      }
+                                      pendingTorrentUri?.let {
+                                          Text(
+                                              "Last selected: $it",
+                                              style = MaterialTheme.typography.bodySmall,
+                                              color = MaterialTheme.colorScheme.onSurfaceVariant
+                                          )
+                                      }
+                                  }
+
+                                  else -> {
+                                      Text("Choose a .meta4 or .metalink file to enqueue all contained resources through aria2.")
+                                      OutlinedTextField(
+                                          value = selectedFiles,
+                                          onValueChange = viewModel::updateSelectedFiles,
+                                          modifier = Modifier.fillMaxWidth(),
+                                          label = { Text("Selective files (optional)") }
+                                      )
+                                      Button(
+                                          onClick = { metalinkPicker.launch(arrayOf("application/xml", "text/xml", "*/*")) },
+                                          enabled = !uiState.isBusy,
+                                          modifier = Modifier
+                                              .fillMaxWidth()
+                                              .height(48.dp)
+                                      ) {
+                                          Text("Pick metalink file")
+                                      }
+                                      pendingMetalinkUri?.let {
+                                          Text(
+                                              "Last selected: $it",
+                                              style = MaterialTheme.typography.bodySmall,
+                                              color = MaterialTheme.colorScheme.onSurfaceVariant
+                                          )
+                                      }
+                                  }
+                              }
+                          }
+                      }
+                  }
+              }
+          }
+          EOF
+
+          cat > app/src/main/java/com/aria2/downloader/ui/screens/settings/SettingsScreen.kt <<'EOF'
+          package com.aria2.downloader.ui.screens.settings
+
+          import androidx.compose.foundation.layout.Arrangement
+          import androidx.compose.foundation.layout.Column
+          import androidx.compose.foundation.layout.Row
+          import androidx.compose.foundation.layout.fillMaxSize
+          import androidx.compose.foundation.layout.fillMaxWidth
+          import androidx.compose.foundation.layout.padding
+          import androidx.compose.foundation.rememberScrollState
+          import androidx.compose.foundation.verticalScroll
+          import androidx.compose.material3.AssistChip
+          import androidx.compose.material3.Card
+          import androidx.compose.material3.CardDefaults
+          import androidx.compose.material3.ExperimentalMaterial3Api
+          import androidx.compose.material3.MaterialTheme
+          import androidx.compose.material3.Scaffold
+          import androidx.compose.material3.SegmentedButton
+          import androidx.compose.material3.SingleChoiceSegmentedButtonRow
+          import androidx.compose.material3.Slider
+          import androidx.compose.material3.Switch
+          import androidx.compose.material3.Text
+          import androidx.compose.material3.TopAppBar
+          import androidx.compose.runtime.Composable
+          import androidx.compose.runtime.collectAsState
+          import androidx.compose.runtime.getValue
+          import androidx.compose.ui.Modifier
+          import androidx.compose.ui.unit.dp
+          import com.aria2.downloader.domain.model.AppIcon
+          import com.aria2.downloader.domain.model.ThemeMode
+
+          @OptIn(ExperimentalMaterial3Api::class)
+          @Composable
+          fun SettingsScreen(
+              paddingTop: androidx.compose.ui.unit.Dp,
+              viewModel: SettingsViewModel
+          ) {
+              val settings by viewModel.settings.collectAsState()
+
+              Scaffold(topBar = { TopAppBar(title = { Text("Settings") }) }) { inner ->
+                  Column(
+                      modifier = Modifier
+                          .fillMaxSize()
+                          .padding(inner)
+                          .padding(top = paddingTop)
+                          .verticalScroll(rememberScrollState())
+                          .padding(horizontal = 16.dp, vertical = 10.dp),
+                      verticalArrangement = Arrangement.spacedBy(14.dp)
+                  ) {
+                      SettingsCard("Theme") {
+                          SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
+                              ThemeMode.entries.forEachIndexed { index, mode ->
+                                  SegmentedButton(
+                                      selected = settings.themeMode == mode,
+                                      onClick = { viewModel.updateTheme(mode) },
+                                      shape = androidx.compose.material3.SegmentedButtonDefaults.itemShape(
+                                          index,
+                                          ThemeMode.entries.size
+                                      )
+                                  ) {
+                                      Text(mode.name.lowercase().replaceFirstChar { it.titlecase() })
+                                  }
+                              }
+                          }
+                      }
+
+                      SettingsCard("Launcher icon") {
+                          Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                              AppIcon.entries.forEach { icon ->
+                                  AssistChip(
+                                      onClick = { viewModel.updateIcon(icon) },
+                                      label = { Text(icon.name.lowercase().replaceFirstChar { it.titlecase() }) }
+                                  )
+                              }
+                          }
+                      }
+
+                      SettingsCard("Concurrent downloads") {
+                          SliderRow("Queue size", settings.maxConcurrentDownloads.toFloat(), 1f..10f) {
+                              viewModel.updateConcurrent(it.toInt())
+                          }
+                          SliderRow("Split per item", settings.split.toFloat(), 1f..16f) {
+                              viewModel.updateSplit(it.toInt())
+                          }
+                          SliderRow("Connections per server", settings.maxConnectionPerServer.toFloat(), 1f..16f) {
+                              viewModel.updateConnections(it.toInt())
+                          }
+                          SliderRow("Min split size (MB)", settings.minSplitSizeMb.toFloat(), 1f..32f) {
+                              viewModel.updateMinSplit(it.toInt())
+                          }
+                      }
+
+                      SettingsCard("Torrent engine") {
+                          ToggleRow("DHT", settings.enableDht, viewModel::updateDht)
+                          ToggleRow("PEX", settings.peerExchange, viewModel::updatePex)
+                          ToggleRow("Local peer discovery", settings.localPeerDiscovery, viewModel::updateLpd)
+                          ToggleRow("Require encryption", settings.requireEncryption, viewModel::updateEncryption)
+                      }
+
+                      SettingsCard("Notifications") {
+                          ToggleRow(
+                              "Foreground service notifications",
+                              settings.notificationsEnabled,
+                              viewModel::updateNotifications
+                          )
+                      }
+
+                      SettingsCard("About this build") {
+                          Text("Version 1.1.0", style = MaterialTheme.typography.bodyMedium)
+                          Text("Developer: Aakash Panta", style = MaterialTheme.typography.bodyMedium)
+                          Text(
+                              "This build ships a bundled arm64 aria2 binary, starts it as a local daemon, and talks to it over JSON-RPC.",
+                              style = MaterialTheme.typography.bodySmall,
+                              color = MaterialTheme.colorScheme.onSurfaceVariant
+                          )
+                      }
+                  }
+              }
+          }
+
+          @Composable
+          private fun SettingsCard(
+              title: String,
+              content: @Composable () -> Unit
+          ) {
+              Card(
+                  colors = CardDefaults.cardColors(
+                      containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f)
+                  )
+              ) {
+                  Column(
+                      modifier = Modifier.padding(16.dp),
+                      verticalArrangement = Arrangement.spacedBy(12.dp)
+                  ) {
+                      Text(title, style = MaterialTheme.typography.titleMedium)
+                      content()
+                  }
+              }
+          }
+
+          @Composable
+          private fun SliderRow(
+              title: String,
+              value: Float,
+              range: ClosedFloatingPointRange<Float>,
+              onValueChange: (Float) -> Unit
+          ) {
+              Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                  Text("$title: ${value.toInt()}", style = MaterialTheme.typography.bodyMedium)
+                  Slider(
+                      value = value,
+                      onValueChange = onValueChange,
+                      valueRange = range
+                  )
+              }
+          }
+
+          @Composable
+          private fun ToggleRow(
+              title: String,
+              checked: Boolean,
+              onToggle: (Boolean) -> Unit
+          ) {
+              Row(
+                  modifier = Modifier.fillMaxWidth(),
+                  horizontalArrangement = Arrangement.SpaceBetween
+              ) {
+                  Text(title, style = MaterialTheme.typography.bodyMedium)
+                  Switch(checked = checked, onCheckedChange = onToggle)
+              }
+          }
+          EOF
+
+      - name: Show changed files
+        shell: bash
+        run: |
+          echo "=== CHANGED FILES ==="
+          git status --short
+
+      - name: Commit and push replacements
+        shell: bash
+        run: |
+          set -e
+
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+
+          git add -A
+
+          if git diff --cached --quiet; then
+            echo "No changes to commit"
+            exit 0
+          fi
+
+          git commit -m 'Replace fixed Kotlin and Compose files automatically'
+          git push
