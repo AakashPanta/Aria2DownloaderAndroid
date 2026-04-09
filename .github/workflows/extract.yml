@@ -11,7 +11,7 @@ jobs:
     runs-on: ubuntu-latest
 
     env:
-      ZIP_FILE: Aria2DownloaderAndroid_icon_updated.zip
+      ZIP_FILE: Aria2DownloaderAndroid_aria2_rebuilt_project.zip
 
     steps:
       - name: Checkout repo
