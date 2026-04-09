@@ -10,6 +10,8 @@ import javax.inject.Inject
 import javax.inject.Singleton
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 
 @Singleton
@@ -20,6 +22,8 @@ class Aria2ProcessManager @Inject constructor(
 ) {
     @Volatile
     private var process: Process? = null
+
+    private val processMutex = Mutex()
 
     private val stagingDirectory: File
         get() = File(
@@ -36,108 +40,129 @@ class Aria2ProcessManager @Inject constructor(
     }
 
     suspend fun ensureRunning() = withContext(Dispatchers.IO) {
-        if (rpcClient.isAvailable()) {
-            return@withContext
-        }
-
-        val binary = resolveBundledBinary()
-        val wrapper = installWrapper(binary)
-        val settings = settingsRepository.currentSettings()
-        val targetDownloadDir = resolveDownloadDirectory(settings)
-
-        if (process?.isAlive == true) {
-            process?.destroy()
-            process = null
-        }
-
-        val homeDir = File(context.filesDir, "aria2/home").apply { mkdirs() }
-        val sessionFile = File(homeDir, "session.txt").apply {
-            if (!exists()) createNewFile()
-        }
-        val logFile = File(homeDir, "aria2.log").apply {
-            if (!exists()) createNewFile()
-        }
-
-        val aria2Args = mutableListOf(
-            "--enable-rpc=true",
-            "--rpc-listen-all=false",
-            "--rpc-listen-port=6800",
-            "--rpc-secret=${settings.rpcToken}",
-            "--dir=${targetDownloadDir.absolutePath}",
-            "--continue=true",
-            "--auto-file-renaming=true",
-            "--allow-overwrite=false",
-            "--max-concurrent-downloads=${settings.maxConcurrentDownloads}",
-            "--split=${settings.split}",
-            "--max-connection-per-server=${settings.maxConnectionPerServer}",
-            "--min-split-size=${settings.minSplitSizeMb}M",
-            "--file-allocation=none",
-            "--summary-interval=0",
-            "--disk-cache=16M",
-            "--enable-dht=${settings.enableDht}",
-            "--enable-peer-exchange=${settings.peerExchange}",
-            "--bt-enable-lpd=${settings.localPeerDiscovery}",
-            "--bt-require-crypto=${settings.requireEncryption}",
-            "--follow-torrent=true",
-            "--follow-metalink=true",
-            "--bt-save-metadata=true",
-            "--rpc-save-upload-metadata=true",
-            "--save-session=${sessionFile.absolutePath}",
-            "--input-file=${sessionFile.absolutePath}",
-            "--save-session-interval=30",
-            "--seed-time=0",
-            "--log=${logFile.absolutePath}"
-        )
-
-        val command = mutableListOf("/system/bin/sh", wrapper.absolutePath).apply {
-            addAll(aria2Args)
-        }
-
-        process = ProcessBuilder(command)
-            .directory(homeDir)
-            .redirectErrorStream(true)
-            .redirectOutput(ProcessBuilder.Redirect.appendTo(logFile))
-            .start()
-
-        for (i in 0 until 40) {
+        processMutex.withLock {
             if (rpcClient.isAvailable()) {
-                return@withContext
+                return@withLock
             }
 
-            val exited = runCatching { process?.exitValue() }.getOrNull()
-            if (exited != null) {
-                break
-            }
+            val binary = resolveBundledBinary()
+            val wrapper = installWrapper(binary)
+            val settings = settingsRepository.currentSettings()
+            val targetDownloadDir = resolveDownloadDirectory(settings)
 
-            delay(250)
-        }
-
-        val exitCode = runCatching { process?.exitValue() }.getOrNull()
-        val logTail = runCatching {
-            logFile.takeIf { it.exists() }
-                ?.readText()
-                ?.takeLast(4000)
-                ?.trim()
-        }.getOrNull()
-
-        throw IllegalStateException(
-            buildString {
-                append("aria2 daemon did not start")
-                exitCode?.let { append(" (exit code ").append(it).append(")") }
-                if (!logTail.isNullOrBlank()) {
-                    append(". Log: ")
-                    append(logTail)
-                } else {
-                    append(". Check that libaria2c.so exists in app/src/main/jniLibs/arm64-v8a/")
+            if (process?.isAlive == true) {
+                process?.destroy()
+                process = null
+                delay(300)
+                if (rpcClient.isAvailable()) {
+                    return@withLock
                 }
             }
-        )
+
+            val homeDir = File(context.filesDir, "aria2/home").apply { mkdirs() }
+            val sessionFile = File(homeDir, "session.txt").apply {
+                if (!exists()) createNewFile()
+            }
+            val logFile = File(homeDir, "aria2.log").apply {
+                if (!exists()) createNewFile()
+            }
+
+            val aria2Args = mutableListOf(
+                "--enable-rpc=true",
+                "--rpc-listen-all=false",
+                "--rpc-listen-port=6800",
+                "--rpc-secret=${settings.rpcToken}",
+                "--dir=${targetDownloadDir.absolutePath}",
+                "--continue=true",
+                "--auto-file-renaming=true",
+                "--allow-overwrite=false",
+                "--max-concurrent-downloads=${settings.maxConcurrentDownloads}",
+                "--split=${settings.split}",
+                "--max-connection-per-server=${settings.maxConnectionPerServer}",
+                "--min-split-size=${settings.minSplitSizeMb}M",
+                "--file-allocation=none",
+                "--summary-interval=0",
+                "--disk-cache=16M",
+                "--enable-dht=${settings.enableDht}",
+                "--enable-peer-exchange=${settings.peerExchange}",
+                "--bt-enable-lpd=${settings.localPeerDiscovery}",
+                "--bt-require-crypto=${settings.requireEncryption}",
+                "--follow-torrent=true",
+                "--follow-metalink=true",
+                "--bt-save-metadata=true",
+                "--rpc-save-upload-metadata=true",
+                "--save-session=${sessionFile.absolutePath}",
+                "--input-file=${sessionFile.absolutePath}",
+                "--save-session-interval=30",
+                "--seed-time=0",
+                "--log=${logFile.absolutePath}"
+            )
+
+            val command = mutableListOf("/system/bin/sh", wrapper.absolutePath).apply {
+                addAll(aria2Args)
+            }
+
+            process = ProcessBuilder(command)
+                .directory(homeDir)
+                .redirectErrorStream(true)
+                .redirectOutput(ProcessBuilder.Redirect.appendTo(logFile))
+                .start()
+
+            for (i in 0 until 40) {
+                if (rpcClient.isAvailable()) {
+                    return@withLock
+                }
+
+                val exited = runCatching { process?.exitValue() }.getOrNull()
+                if (exited != null) {
+                    break
+                }
+
+                delay(250)
+            }
+
+            val exitCode = runCatching { process?.exitValue() }.getOrNull()
+            val logTail = runCatching {
+                logFile.takeIf { it.exists() }
+                    ?.readText()
+                    ?.takeLast(4000)
+                    ?.trim()
+                    .orEmpty()
+            }.getOrDefault("")
+
+            val addressInUse = logTail.contains("Address already in use", ignoreCase = true) ||
+                logTail.contains("failed to bind TCP port 6800", ignoreCase = true)
+
+            if (addressInUse) {
+                for (i in 0 until 20) {
+                    if (rpcClient.isAvailable()) {
+                        return@withLock
+                    }
+                    delay(250)
+                }
+            }
+
+            throw IllegalStateException(
+                buildString {
+                    append("aria2 daemon did not start")
+                    exitCode?.let { append(" (exit code ").append(it).append(")") }
+                    if (logTail.isNotBlank()) {
+                        append(". Log: ")
+                        append(logTail)
+                    } else {
+                        append(". Check that libaria2c.so exists in app/src/main/jniLibs/arm64-v8a/")
+                    }
+                }
+            )
+        }
     }
 
     suspend fun stop() = withContext(Dispatchers.IO) {
-        runCatching { rpcClient.shutdown() }
-        process?.destroy()
-        process = null
+        processMutex.withLock {
+            runCatching { rpcClient.shutdown() }
+            process?.destroy()
+            process = null
+        }
     }
 
     private fun resolveBundledBinary(): File {
