@@ -1,7 +1,6 @@
 package com.aria2.downloader.domain.engine
 
 import android.net.Uri
-import android.webkit.MimeTypeMap
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.net.URLDecoder
@@ -40,13 +39,13 @@ class URLValidator @Inject constructor(
             )
         }
 
-        val uri = Uri.parse(trimmed)
-        val scheme = uri.scheme?.lowercase()
+        val parsed = Uri.parse(trimmed)
+        val scheme = parsed.scheme?.lowercase()
         require(scheme in listOf("http", "https", "ftp", "sftp")) {
             "Only http, https, ftp, sftp and magnet links are supported here."
         }
 
-        val guessedType = detectSourceType(trimmed, uri)
+        val guessedType = detectSourceType(trimmed)
         val defaultName = extractFileName(trimmed) ?: when (guessedType) {
             DownloadSourceType.TORRENT -> "download.torrent"
             DownloadSourceType.METALINK -> "download.meta4"
@@ -55,9 +54,10 @@ class URLValidator @Inject constructor(
 
         val head = inspectWithHead(trimmed)
         if (head != null) {
+            val finalUrl = head.finalUrl ?: trimmed
             return@withContext ValidationResult(
-                normalizedInput = head.finalUrl ?: trimmed,
-                sourceType = detectSourceType(head.finalUrl ?: trimmed, Uri.parse(head.finalUrl ?: trimmed), head.contentType),
+                normalizedInput = finalUrl,
+                sourceType = detectSourceType(finalUrl, head.contentType),
                 fileName = head.fileName ?: defaultName,
                 totalBytes = head.contentLength,
                 mimeType = head.contentType,
@@ -67,9 +67,10 @@ class URLValidator @Inject constructor(
 
         val rangeGet = inspectWithRangeRequest(trimmed)
         if (rangeGet != null) {
+            val finalUrl = rangeGet.finalUrl ?: trimmed
             return@withContext ValidationResult(
-                normalizedInput = rangeGet.finalUrl ?: trimmed,
-                sourceType = detectSourceType(rangeGet.finalUrl ?: trimmed, Uri.parse(rangeGet.finalUrl ?: trimmed), rangeGet.contentType),
+                normalizedInput = finalUrl,
+                sourceType = detectSourceType(finalUrl, rangeGet.contentType),
                 fileName = rangeGet.fileName ?: defaultName,
                 totalBytes = rangeGet.contentLength,
                 mimeType = rangeGet.contentType,
@@ -91,7 +92,6 @@ class URLValidator @Inject constructor(
 
     private fun detectSourceType(
         raw: String,
-        uri: Uri,
         contentType: String? = null
     ): DownloadSourceType {
         val lower = raw.lowercase()
@@ -104,8 +104,8 @@ class URLValidator @Inject constructor(
     }
 
     private fun extractFileName(url: String): String? {
-        val uri = Uri.parse(url)
-        val encoded = uri.lastPathSegment ?: return null
+        val parsed = Uri.parse(url)
+        val encoded = parsed.lastPathSegment ?: return null
         val decoded = runCatching { URLDecoder.decode(encoded, "UTF-8") }.getOrNull() ?: encoded
         return decoded.substringAfterLast('/').takeIf { it.isNotBlank() }
     }

@@ -23,5 +23,4 @@ class QueuedViewModel @Inject constructor(
     fun moveDown(download: DownloadInfo) = viewModelScope.launch { engine.moveQueue(download.id, 1) }
     fun moveTop(download: DownloadInfo) = viewModelScope.launch { engine.moveQueueToTop(download.id) }
     fun cancel(download: DownloadInfo) = viewModelScope.launch { engine.cancel(download.id) }
-    fun open(download: DownloadInfo) = Unit
 }
