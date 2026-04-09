@@ -1,9 +1,13 @@
 package com.aria2.downloader.domain.engine
 
 import android.util.Log
-import kotlinx.coroutines.*
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.io.File
@@ -13,7 +17,7 @@ data class DownloadSegment(
     val index: Int,
     val startByte: Long,
     val endByte: Long,
-    var downloadedBytes: Long = 0
+    var downloadedBytes: Long = 0L
 )
 
 class SegmentedDownloader(
@@ -22,6 +26,7 @@ class SegmentedDownloader(
 ) {
     companion object {
         private const val TAG = "SegmentedDownloader"
+        private const val BUFFER_SIZE = 8192
     }
 
     suspend fun download(
@@ -32,15 +37,24 @@ class SegmentedDownloader(
         onProgress: (downloadedBytes: Long, totalBytes: Long) -> Unit,
         onCancel: suspend () -> Boolean
     ): Result<Unit> = withContext(Dispatchers.IO) {
-        return@withContext try {
-            // Create parent directories if needed
+        try {
             outputFile.parentFile?.mkdirs()
 
-            // If server doesn't support resume or file size is unknown, do single-connection download
-            if (!supportsResume || fileSize <= 0) {
-                downloadSingleConnection(url, outputFile, onProgress, onCancel)
+            if (!supportsResume || fileSize <= 0L || maxConnections <= 1) {
+                downloadSingleConnection(
+                    url = url,
+                    outputFile = outputFile,
+                    onProgress = onProgress,
+                    onCancel = onCancel
+                )
             } else {
-                downloadSegmented(url, outputFile, fileSize, onProgress, onCancel)
+                downloadSegmented(
+                    url = url,
+                    outputFile = outputFile,
+                    fileSize = fileSize,
+                    onProgress = onProgress,
+                    onCancel = onCancel
+                )
             }
         } catch (e: Exception) {
             Log.e(TAG, "Download failed", e)
@@ -59,32 +73,35 @@ class SegmentedDownloader(
                 .url(url)
                 .build()
 
-            val response = okHttpClient.newCall(request).execute()
-            if (!response.isSuccessful) {
-                return Result.failure(Exception("HTTP ${response.code}: ${response.message}"))
-            }
+            okHttpClient.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) {
+                    return Result.failure(Exception("HTTP ${response.code}: ${response.message}"))
+                }
 
-            val body = response.body ?: return Result.failure(Exception("Empty response body"))
-            val totalBytes = body.contentLength()
+                val body = response.body ?: return Result.failure(Exception("Empty response body"))
+                val totalBytes = body.contentLength()
 
-            RandomAccessFile(outputFile, "rw").use { file ->
-                body.byteStream().use { input ->
-                    val buffer = ByteArray(8192)
-                    var downloadedBytes = 0L
-                    var bytesRead: Int
+                RandomAccessFile(outputFile, "rw").use { file ->
+                    body.byteStream().use { input ->
+                        val buffer = ByteArray(BUFFER_SIZE)
+                        var downloadedBytes = 0L
 
-                    while (input.read(buffer).also { bytesRead = it } != -1) {
-                        if (onCancel()) {
-                            return Result.failure(Exception("Download cancelled"))
+                        while (true) {
+                            val bytesRead = input.read(buffer)
+                            if (bytesRead == -1) break
+
+                            if (onCancel()) {
+                                return Result.failure(Exception("Download cancelled"))
+                            }
+
+                            file.write(buffer, 0, bytesRead)
+                            downloadedBytes += bytesRead
+                            onProgress(downloadedBytes, totalBytes)
                         }
-                        file.write(buffer, 0, bytesRead)
-                        downloadedBytes += bytesRead
-                        onProgress(downloadedBytes, totalBytes)
                     }
                 }
             }
 
-            response.close()
             Result.success(Unit)
         } catch (e: Exception) {
             Log.e(TAG, "Single connection download failed", e)
@@ -98,38 +115,51 @@ class SegmentedDownloader(
         fileSize: Long,
         onProgress: (downloadedBytes: Long, totalBytes: Long) -> Unit,
         onCancel: suspend () -> Boolean
-    ): Result<Unit> {
-        return try {
-            val segmentSize = (fileSize + maxConnections - 1) / maxConnections
+    ): Result<Unit> = coroutineScope {
+        try {
+            val actualConnections = maxConnections.coerceAtLeast(1)
+            val segmentSize = (fileSize + actualConnections - 1) / actualConnections
             val segments = mutableListOf<DownloadSegment>()
 
             var currentStart = 0L
-            for (i in 0 until maxConnections) {
-                val start = currentStart
+            for (i in 0 until actualConnections) {
+                if (currentStart >= fileSize) break
+
                 val end = minOf(currentStart + segmentSize - 1, fileSize - 1)
-                if (start < fileSize) {
-                    segments.add(DownloadSegment(i, start, end))
-                    currentStart = end + 1
-                }
+                segments.add(
+                    DownloadSegment(
+                        index = i,
+                        startByte = currentStart,
+                        endByte = end
+                    )
+                )
+                currentStart = end + 1
             }
 
-            // Create empty file
-            RandomAccessFile(outputFile, "rw").use { it.setLength(fileSize) }
+            RandomAccessFile(outputFile, "rw").use { raf ->
+                raf.setLength(fileSize)
+            }
 
-            val downloadMutex = Mutex()
-            val segmentJobs = segments.map { segment ->
+            val progressMutex = Mutex()
+
+            val results = segments.map { segment ->
                 async {
-                    downloadSegment(url, outputFile, segment, downloadMutex, onProgress, onCancel)
+                    downloadSegment(
+                        url = url,
+                        outputFile = outputFile,
+                        segment = segment,
+                        allSegments = segments,
+                        totalBytes = fileSize,
+                        progressMutex = progressMutex,
+                        onProgress = onProgress,
+                        onCancel = onCancel
+                    )
                 }
-            }
+            }.awaitAll()
 
-            // Wait for all segments to complete
-            val results = segmentJobs.awaitAll()
-            val hasError = results.any { !it.isSuccess }
-
-            if (hasError) {
-                val error = results.firstOrNull { !it.isSuccess }?.exceptionOrNull()
-                Result.failure(error ?: Exception("Segment download failed"))
+            val firstError = results.firstOrNull { it.isFailure }?.exceptionOrNull()
+            if (firstError != null) {
+                Result.failure(firstError)
             } else {
                 Result.success(Unit)
             }
@@ -143,7 +173,9 @@ class SegmentedDownloader(
         url: String,
         outputFile: File,
         segment: DownloadSegment,
-        downloadMutex: Mutex,
+        allSegments: List<DownloadSegment>,
+        totalBytes: Long,
+        progressMutex: Mutex,
         onProgress: (downloadedBytes: Long, totalBytes: Long) -> Unit,
         onCancel: suspend () -> Boolean
     ): Result<Unit> {
@@ -153,36 +185,41 @@ class SegmentedDownloader(
                 .header("Range", "bytes=${segment.startByte}-${segment.endByte}")
                 .build()
 
-            val response = okHttpClient.newCall(request).execute()
-            if (response.code !in 200..299) {
-                return Result.failure(Exception("HTTP ${response.code}: Segment download failed"))
-            }
+            okHttpClient.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) {
+                    return Result.failure(
+                        Exception("HTTP ${response.code}: Segment ${segment.index} download failed")
+                    )
+                }
 
-            val body = response.body ?: return Result.failure(Exception("Empty response"))
+                val body = response.body ?: return Result.failure(Exception("Empty response body"))
 
-            RandomAccessFile(outputFile, "rw").use { file ->
-                body.byteStream().use { input ->
+                RandomAccessFile(outputFile, "rw").use { file ->
                     file.seek(segment.startByte)
-                    val buffer = ByteArray(8192)
-                    var bytesRead: Int
 
-                    while (input.read(buffer).also { bytesRead = it } != -1) {
-                        if (onCancel()) {
-                            response.close()
-                            return Result.failure(Exception("Download cancelled"))
-                        }
-                        file.write(buffer, 0, bytesRead)
-                        segment.downloadedBytes += bytesRead
+                    body.byteStream().use { input ->
+                        val buffer = ByteArray(BUFFER_SIZE)
 
-                        downloadMutex.withLock {
-                            val totalDownloaded = calculateTotalDownloaded(segments)
-                            onProgress(totalDownloaded, (file.length()))
+                        while (true) {
+                            val bytesRead = input.read(buffer)
+                            if (bytesRead == -1) break
+
+                            if (onCancel()) {
+                                return Result.failure(Exception("Download cancelled"))
+                            }
+
+                            file.write(buffer, 0, bytesRead)
+                            segment.downloadedBytes += bytesRead.toLong()
+
+                            progressMutex.withLock {
+                                val totalDownloaded = calculateTotalDownloaded(allSegments)
+                                onProgress(totalDownloaded, totalBytes)
+                            }
                         }
                     }
                 }
             }
 
-            response.close()
             Result.success(Unit)
         } catch (e: Exception) {
             Log.e(TAG, "Segment ${segment.index} download failed", e)
@@ -191,6 +228,6 @@ class SegmentedDownloader(
     }
 
     private fun calculateTotalDownloaded(segments: List<DownloadSegment>): Long {
-        return segments.sumOf { it.downloadedBytes }
+        return segments.sumOf { segment -> segment.downloadedBytes }
     }
 }
