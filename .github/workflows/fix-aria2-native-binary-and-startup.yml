@@ -1,0 +1,347 @@
+name: Fix aria2 Native Binary and Startup
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  fix-aria2:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Copy aria2 binary into jniLibs
+        shell: bash
+        run: |
+          set -e
+
+          mkdir -p app/src/main/jniLibs/arm64-v8a
+
+          if [ ! -f "app/src/main/assets/bin/aria2c-arm64-v8a" ]; then
+            echo "Missing source binary: app/src/main/assets/bin/aria2c-arm64-v8a"
+            exit 1
+          fi
+
+          cp app/src/main/assets/bin/aria2c-arm64-v8a app/src/main/jniLibs/arm64-v8a/libaria2c.so
+          ls -lah app/src/main/jniLibs/arm64-v8a/
+
+      - name: Replace AndroidManifest.xml
+        shell: bash
+        run: |
+          set -e
+
+          mkdir -p app/src/main
+
+          cat > app/src/main/AndroidManifest.xml <<'EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android"
+              xmlns:tools="http://schemas.android.com/tools">
+
+              <uses-permission android:name="android.permission.INTERNET" />
+              <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+
+              <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+              <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+              <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
+              <uses-permission
+                  android:name="android.permission.READ_EXTERNAL_STORAGE"
+                  android:maxSdkVersion="32" />
+              <uses-permission
+                  android:name="android.permission.WRITE_EXTERNAL_STORAGE"
+                  android:maxSdkVersion="28" />
+
+              <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
+              <uses-permission android:name="android.permission.READ_MEDIA_VIDEO" />
+              <uses-permission android:name="android.permission.READ_MEDIA_AUDIO" />
+              <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" />
+
+              <application
+                  android:name=".Aria2DownloaderApp"
+                  android:allowBackup="true"
+                  android:dataExtractionRules="@xml/data_extraction_rules"
+                  android:extractNativeLibs="true"
+                  android:fullBackupContent="@xml/backup_rules"
+                  android:icon="@mipmap/ic_launcher"
+                  android:label="@string/app_name"
+                  android:roundIcon="@mipmap/ic_launcher_round"
+                  android:supportsRtl="true"
+                  android:theme="@style/Theme.Aria2Downloader"
+                  tools:targetApi="34">
+
+                  <activity
+                      android:name=".MainActivity"
+                      android:enabled="true"
+                      android:exported="true"
+                      android:theme="@style/Theme.Aria2Downloader">
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN" />
+                          <category android:name="android.intent.category.LAUNCHER" />
+                      </intent-filter>
+                  </activity>
+
+                  <activity-alias
+                      android:name=".launcher.AccentLauncher"
+                      android:enabled="false"
+                      android:exported="true"
+                      android:icon="@mipmap/ic_launcher_accent"
+                      android:roundIcon="@mipmap/ic_launcher_accent_round"
+                      android:label="@string/app_name"
+                      android:targetActivity=".MainActivity">
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN" />
+                          <category android:name="android.intent.category.LAUNCHER" />
+                      </intent-filter>
+                  </activity-alias>
+
+                  <activity-alias
+                      android:name=".launcher.DarkLauncher"
+                      android:enabled="false"
+                      android:exported="true"
+                      android:icon="@mipmap/ic_launcher_dark"
+                      android:roundIcon="@mipmap/ic_launcher_dark_round"
+                      android:label="@string/app_name"
+                      android:targetActivity=".MainActivity">
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN" />
+                          <category android:name="android.intent.category.LAUNCHER" />
+                      </intent-filter>
+                  </activity-alias>
+
+                  <service
+                      android:name=".service.DownloadService"
+                      android:enabled="true"
+                      android:exported="false"
+                      android:foregroundServiceType="dataSync" />
+              </application>
+
+          </manifest>
+          EOF
+
+      - name: Replace Aria2ProcessManager.kt
+        shell: bash
+        run: |
+          set -e
+
+          mkdir -p app/src/main/java/com/aria2/downloader/domain/engine
+
+          cat > app/src/main/java/com/aria2/downloader/domain/engine/Aria2ProcessManager.kt <<'EOF'
+          package com.aria2.downloader.domain.engine
+
+          import android.content.Context
+          import android.os.Build
+          import com.aria2.downloader.data.preferences.SettingsRepository
+          import com.aria2.downloader.domain.model.AppSettings
+          import dagger.hilt.android.qualifiers.ApplicationContext
+          import java.io.File
+          import javax.inject.Inject
+          import javax.inject.Singleton
+          import kotlinx.coroutines.Dispatchers
+          import kotlinx.coroutines.delay
+          import kotlinx.coroutines.withContext
+
+          @Singleton
+          class Aria2ProcessManager @Inject constructor(
+              @ApplicationContext private val context: Context,
+              private val settingsRepository: SettingsRepository,
+              private val rpcClient: Aria2RpcClient
+          ) {
+              @Volatile
+              private var process: Process? = null
+
+              private val stagingDirectory: File
+                  get() = File(
+                      context.getExternalFilesDir(android.os.Environment.DIRECTORY_DOWNLOADS),
+                      "Aria2Downloads"
+                  ).apply { mkdirs() }
+
+              fun resolveDownloadDirectory(settings: AppSettings): File {
+                  return if (settings.downloadLocationUri == null) {
+                      File(settings.downloadLocationPath).apply { mkdirs() }
+                  } else {
+                      stagingDirectory
+                  }
+              }
+
+              suspend fun ensureRunning() = withContext(Dispatchers.IO) {
+                  if (rpcClient.isAvailable()) {
+                      return@withContext
+                  }
+
+                  val binary = resolveBundledBinary()
+                  val wrapper = installWrapper(binary)
+                  val settings = settingsRepository.currentSettings()
+                  val targetDownloadDir = resolveDownloadDirectory(settings)
+
+                  if (process?.isAlive == true) {
+                      process?.destroy()
+                      process = null
+                  }
+
+                  val homeDir = File(context.filesDir, "aria2/home").apply { mkdirs() }
+                  val sessionFile = File(homeDir, "session.txt").apply { if (!exists()) createNewFile() }
+                  val logFile = File(homeDir, "aria2.log")
+                  if (!logFile.exists()) {
+                      logFile.createNewFile()
+                  }
+
+                  val aria2Args = mutableListOf(
+                      "--enable-rpc=true",
+                      "--rpc-listen-all=false",
+                      "--rpc-listen-port=6800",
+                      "--rpc-secret=${settings.rpcToken}",
+                      "--dir=${targetDownloadDir.absolutePath}",
+                      "--continue=true",
+                      "--auto-file-renaming=true",
+                      "--allow-overwrite=false",
+                      "--max-concurrent-downloads=${settings.maxConcurrentDownloads}",
+                      "--split=${settings.split}",
+                      "--max-connection-per-server=${settings.maxConnectionPerServer}",
+                      "--min-split-size=${settings.minSplitSizeMb}M",
+                      "--file-allocation=none",
+                      "--summary-interval=0",
+                      "--disk-cache=16M",
+                      "--enable-dht=${settings.enableDht}",
+                      "--enable-peer-exchange=${settings.peerExchange}",
+                      "--bt-enable-lpd=${settings.localPeerDiscovery}",
+                      "--bt-require-crypto=${settings.requireEncryption}",
+                      "--follow-torrent=true",
+                      "--follow-metalink=true",
+                      "--bt-save-metadata=true",
+                      "--rpc-save-upload-metadata=true",
+                      "--save-session=${sessionFile.absolutePath}",
+                      "--input-file=${sessionFile.absolutePath}",
+                      "--save-session-interval=30",
+                      "--seed-time=0",
+                      "--log=${logFile.absolutePath}"
+                  )
+
+                  val command = mutableListOf("/system/bin/sh", wrapper.absolutePath).apply {
+                      addAll(aria2Args)
+                  }
+
+                  process = ProcessBuilder(command)
+                      .directory(homeDir)
+                      .redirectErrorStream(true)
+                      .redirectOutput(ProcessBuilder.Redirect.appendTo(logFile))
+                      .start()
+
+                  repeat(40) {
+                      if (rpcClient.isAvailable()) {
+                          return@withContext
+                      }
+
+                      val exited = runCatching { process?.exitValue() }.getOrNull()
+                      if (exited != null) {
+                          break
+                      }
+
+                      delay(250)
+                  }
+
+                  val exitCode = runCatching { process?.exitValue() }.getOrNull()
+                  val logTail = runCatching {
+                      logFile.takeIf { it.exists() }
+                          ?.readText()
+                          ?.takeLast(4000)
+                          ?.trim()
+                  }.getOrNull()
+
+                  throw IllegalStateException(
+                      buildString {
+                          append("aria2 daemon did not start")
+                          exitCode?.let { append(" (exit code ").append(it).append(")") }
+                          if (!logTail.isNullOrBlank()) {
+                              append(". Log: ")
+                              append(logTail)
+                          } else {
+                              append(". Check that libaria2c.so exists in app/src/main/jniLibs/arm64-v8a/")
+                          }
+                      }
+                  )
+              }
+
+              suspend fun stop() = withContext(Dispatchers.IO) {
+                  runCatching { rpcClient.shutdown() }
+                  process?.destroy()
+                  process = null
+              }
+
+              private fun resolveBundledBinary(): File {
+                  require(
+                      Build.SUPPORTED_ABIS.any { it.equals("arm64-v8a", ignoreCase = true) }
+                  ) { "This build currently supports arm64-v8a only." }
+
+                  val libDir = File(context.applicationInfo.nativeLibraryDir)
+                  val binary = File(libDir, "libaria2c.so")
+
+                  require(binary.exists()) {
+                      "Bundled aria2 binary not found at ${binary.absolutePath}"
+                  }
+
+                  binary.setExecutable(true)
+                  return binary
+              }
+
+              private fun installWrapper(binary: File): File {
+                  val wrapper = File(context.filesDir, "aria2/bin/aria2-wrapper.sh")
+                  wrapper.parentFile?.mkdirs()
+
+                  val script = """
+                      |#!/system/bin/sh
+                      |ARIA2_BIN="${binary.absolutePath}"
+                      |DNS1="${'$'}(getprop net.dns1)"
+                      |DNS2="${'$'}(getprop net.dns2)"
+                      |if [ -d /etc/security/cacerts ]; then
+                      |  cat /etc/security/cacerts/* | "${'$'}ARIA2_BIN" \
+                      |    --ca-certificate=/proc/self/fd/0 \
+                      |    --async-dns \
+                      |    --async-dns-server="${'$'}{DNS1},${'$'}{DNS2}" \
+                      |    "${'$'}@"
+                      |else
+                      |  "${'$'}ARIA2_BIN" "${'$'}@"
+                      |fi
+                  """.trimMargin()
+
+                  if (!wrapper.exists() || wrapper.readText() != script) {
+                      wrapper.writeText(script)
+                  }
+                  wrapper.setReadable(true, true)
+                  wrapper.setWritable(true, true)
+                  return wrapper
+              }
+          }
+          EOF
+
+      - name: Show changed files
+        shell: bash
+        run: |
+          echo "=== CHANGED FILES ==="
+          git status --short
+
+      - name: Commit and push fix
+        shell: bash
+        run: |
+          set -e
+
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+
+          git add \
+            app/src/main/jniLibs/arm64-v8a/libaria2c.so \
+            app/src/main/AndroidManifest.xml \
+            app/src/main/java/com/aria2/downloader/domain/engine/Aria2ProcessManager.kt
+
+          if git diff --cached --quiet; then
+            echo "No changes to commit"
+            exit 0
+          fi
+
+          git commit -m 'Fix bundled aria2 native binary startup'
+          git push
