@@ -119,17 +119,17 @@ class Aria2ProcessManager @Inject constructor(
         val wrapper = File(binary.parentFile, "aria2-wrapper.sh")
         val script = """
             |#!/system/bin/sh
-            |BIN_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
-            |DNS1="$(getprop net.dns1)"
-            |DNS2="$(getprop net.dns2)"
+            |BIN_DIR="${'$'}(CDPATH= cd -- "${'$'}(dirname -- "${'$'}0")" && pwd)"
+            |DNS1="${'$'}(getprop net.dns1)"
+            |DNS2="${'$'}(getprop net.dns2)"
             |if [ -d /etc/security/cacerts ]; then
-            |  cat /etc/security/cacerts/* | "$BIN_DIR/aria2c" \
+            |  cat /etc/security/cacerts/* | "${'$'}BIN_DIR/aria2c" \
             |    --ca-certificate=/proc/self/fd/0 \
             |    --async-dns \
             |    --async-dns-server="${'$'}{DNS1},${'$'}{DNS2}" \
-            |    "$@"
+            |    "${'$'}@"
             |else
-            |  "$BIN_DIR/aria2c" "$@"
+            |  "${'$'}BIN_DIR/aria2c" "${'$'}@"
             |fi
         """.trimMargin()
 

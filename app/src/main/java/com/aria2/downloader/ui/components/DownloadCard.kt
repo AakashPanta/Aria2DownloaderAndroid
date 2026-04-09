@@ -7,9 +7,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.weight
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Pause
@@ -46,10 +44,20 @@ fun DownloadCard(
             containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f)
         )
     ) {
-        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+        Column(
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
                 Column(modifier = Modifier.weight(1f)) {
-                    Text(download.fileName, style = MaterialTheme.typography.titleMedium, maxLines = 2)
+                    Text(
+                        download.fileName,
+                        style = MaterialTheme.typography.titleMedium,
+                        maxLines = 2
+                    )
                     Spacer(modifier = Modifier.height(4.dp))
                     Text(
                         "${download.formattedCompletedSize()} / ${download.formattedTotalSize()}",
@@ -68,7 +76,10 @@ fun DownloadCard(
                 modifier = Modifier.fillMaxWidth()
             )
 
-            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
                 Text(
                     "${download.progressPercent}% • ${download.progress.formattedSpeed()}",
                     style = MaterialTheme.typography.bodySmall,
@@ -81,9 +92,15 @@ fun DownloadCard(
                 )
             }
 
-            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.End
+            ) {
                 when (download.status) {
-                    DownloadStatus.DOWNLOADING, DownloadStatus.METADATA, DownloadStatus.QUEUED, DownloadStatus.VALIDATING -> {
+                    DownloadStatus.DOWNLOADING,
+                    DownloadStatus.METADATA,
+                    DownloadStatus.QUEUED,
+                    DownloadStatus.VALIDATING -> {
                         if (onPause != null) {
                             IconButton(onClick = onPause) {
                                 Icon(Icons.Default.Pause, contentDescription = "Pause")
@@ -95,6 +112,7 @@ fun DownloadCard(
                             }
                         }
                     }
+
                     DownloadStatus.PAUSED -> {
                         if (onResume != null) {
                             IconButton(onClick = onResume) {
@@ -107,6 +125,7 @@ fun DownloadCard(
                             }
                         }
                     }
+
                     DownloadStatus.FAILED -> {
                         if (onRetry != null) {
                             IconButton(onClick = onRetry) {
@@ -114,7 +133,8 @@ fun DownloadCard(
                             }
                         }
                     }
-                    else -> {}
+
+                    else -> Unit
                 }
             }
         }

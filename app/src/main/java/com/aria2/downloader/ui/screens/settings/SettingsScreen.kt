@@ -11,6 +11,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SegmentedButton
@@ -27,6 +28,7 @@ import androidx.compose.ui.unit.dp
 import com.aria2.downloader.domain.model.AppIcon
 import com.aria2.downloader.domain.model.ThemeMode
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SettingsScreen(
     paddingTop: androidx.compose.ui.unit.Dp,
@@ -50,7 +52,10 @@ fun SettingsScreen(
                         SegmentedButton(
                             selected = settings.themeMode == mode,
                             onClick = { viewModel.updateTheme(mode) },
-                            shape = androidx.compose.material3.SegmentedButtonDefaults.itemShape(index, ThemeMode.entries.size)
+                            shape = androidx.compose.material3.SegmentedButtonDefaults.itemShape(
+                                index,
+                                ThemeMode.entries.size
+                            )
                         ) {
                             Text(mode.name.lowercase().replaceFirstChar { it.titlecase() })
                         }
@@ -70,10 +75,18 @@ fun SettingsScreen(
             }
 
             SettingsCard("Concurrent downloads") {
-                SliderRow("Queue size", settings.maxConcurrentDownloads.toFloat(), 1f..10f) { viewModel.updateConcurrent(it.toInt()) }
-                SliderRow("Split per item", settings.split.toFloat(), 1f..16f) { viewModel.updateSplit(it.toInt()) }
-                SliderRow("Connections per server", settings.maxConnectionPerServer.toFloat(), 1f..16f) { viewModel.updateConnections(it.toInt()) }
-                SliderRow("Min split size (MB)", settings.minSplitSizeMb.toFloat(), 1f..32f) { viewModel.updateMinSplit(it.toInt()) }
+                SliderRow("Queue size", settings.maxConcurrentDownloads.toFloat(), 1f..10f) {
+                    viewModel.updateConcurrent(it.toInt())
+                }
+                SliderRow("Split per item", settings.split.toFloat(), 1f..16f) {
+                    viewModel.updateSplit(it.toInt())
+                }
+                SliderRow("Connections per server", settings.maxConnectionPerServer.toFloat(), 1f..16f) {
+                    viewModel.updateConnections(it.toInt())
+                }
+                SliderRow("Min split size (MB)", settings.minSplitSizeMb.toFloat(), 1f..32f) {
+                    viewModel.updateMinSplit(it.toInt())
+                }
             }
 
             SettingsCard("Torrent engine") {
@@ -84,7 +97,11 @@ fun SettingsScreen(
             }
 
             SettingsCard("Notifications") {
-                ToggleRow("Foreground service notifications", settings.notificationsEnabled, viewModel::updateNotifications)
+                ToggleRow(
+                    "Foreground service notifications",
+                    settings.notificationsEnabled,
+                    viewModel::updateNotifications
+                )
             }
 
             SettingsCard("About this build") {
@@ -105,7 +122,11 @@ private fun SettingsCard(
     title: String,
     content: @Composable () -> Unit
 ) {
-    Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f))) {
+    Card(
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f)
+        )
+    ) {
         Column(
             modifier = Modifier.padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp)
@@ -139,7 +160,10 @@ private fun ToggleRow(
     checked: Boolean,
     onToggle: (Boolean) -> Unit
 ) {
-    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween
+    ) {
         Text(title, style = MaterialTheme.typography.bodyMedium)
         Switch(checked = checked, onCheckedChange = onToggle)
     }

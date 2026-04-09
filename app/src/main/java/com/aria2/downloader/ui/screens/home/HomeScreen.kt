@@ -8,19 +8,19 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.weight
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material3.Button
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
-import androidx.compose.material3.Scaffold
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -30,6 +30,7 @@ import com.aria2.downloader.domain.model.DownloadProgress
 import com.aria2.downloader.ui.components.DownloadCard
 import com.aria2.downloader.ui.components.MetricCard
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun HomeScreen(
     paddingTop: androidx.compose.ui.unit.Dp,
@@ -68,6 +69,7 @@ fun HomeScreen(
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
+
             item {
                 androidx.compose.foundation.layout.Row(
                     modifier = Modifier.fillMaxWidth(),
@@ -87,6 +89,7 @@ fun HomeScreen(
                     )
                 }
             }
+
             item {
                 androidx.compose.foundation.layout.Row(
                     modifier = Modifier.fillMaxWidth(),
@@ -106,8 +109,11 @@ fun HomeScreen(
                     )
                 }
             }
+
             item {
-                androidx.compose.foundation.layout.Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                androidx.compose.foundation.layout.Row(
+                    horizontalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
                     Button(onClick = onOpenActive, modifier = Modifier.weight(1f)) {
                         Icon(Icons.Default.Download, contentDescription = null)
                         Text(" Active")
@@ -117,6 +123,7 @@ fun HomeScreen(
                     }
                 }
             }
+
             if (state.active.isEmpty()) {
                 item {
                     Column(
@@ -125,7 +132,10 @@ fun HomeScreen(
                             .padding(vertical = 24.dp),
                         verticalArrangement = Arrangement.spacedBy(12.dp)
                     ) {
-                        Text("No active downloads right now.", style = MaterialTheme.typography.titleMedium)
+                        Text(
+                            "No active downloads right now.",
+                            style = MaterialTheme.typography.titleMedium
+                        )
                         Text(
                             "The old “validating URL” dead-end is gone. Paste a direct link, magnet, torrent or metalink and the request goes straight into aria2.",
                             style = MaterialTheme.typography.bodyMedium,
