@@ -1,0 +1,1633 @@
+name: Replace Storage Permission and Settings Fixes
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  replace-files:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Replace files with fixed versions
+        shell: bash
+        run: |
+          set -e
+
+          mkdir -p app/src/main
+          mkdir -p app/src/main/java/com/aria2/downloader/domain/model
+          mkdir -p app/src/main/java/com/aria2/downloader/data/preferences
+          mkdir -p app/src/main/java/com/aria2/downloader/ui/permissions
+          mkdir -p app/src/main/java/com/aria2/downloader/ui/screens/settings
+          mkdir -p app/src/main/java/com/aria2/downloader/domain/engine
+          mkdir -p app/src/main/java/com/aria2/downloader/ui/screens/about
+
+          cat > app/src/main/AndroidManifest.xml <<'EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android"
+              xmlns:tools="http://schemas.android.com/tools">
+
+              <uses-permission android:name="android.permission.INTERNET" />
+              <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+
+              <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+              <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+              <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
+              <uses-permission
+                  android:name="android.permission.READ_EXTERNAL_STORAGE"
+                  android:maxSdkVersion="32" />
+              <uses-permission
+                  android:name="android.permission.WRITE_EXTERNAL_STORAGE"
+                  android:maxSdkVersion="28" />
+
+              <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
+              <uses-permission android:name="android.permission.READ_MEDIA_VIDEO" />
+              <uses-permission android:name="android.permission.READ_MEDIA_AUDIO" />
+
+              <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" />
+
+              <application
+                  android:name=".Aria2DownloaderApp"
+                  android:allowBackup="true"
+                  android:dataExtractionRules="@xml/data_extraction_rules"
+                  android:fullBackupContent="@xml/backup_rules"
+                  android:icon="@mipmap/ic_launcher"
+                  android:label="@string/app_name"
+                  android:roundIcon="@mipmap/ic_launcher_round"
+                  android:supportsRtl="true"
+                  android:theme="@style/Theme.Aria2Downloader"
+                  tools:targetApi="34">
+
+                  <activity
+                      android:name=".MainActivity"
+                      android:enabled="true"
+                      android:exported="true"
+                      android:theme="@style/Theme.Aria2Downloader">
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN" />
+                          <category android:name="android.intent.category.LAUNCHER" />
+                      </intent-filter>
+                  </activity>
+
+                  <activity-alias
+                      android:name=".launcher.AccentLauncher"
+                      android:enabled="false"
+                      android:exported="true"
+                      android:icon="@mipmap/ic_launcher_accent"
+                      android:roundIcon="@mipmap/ic_launcher_accent_round"
+                      android:label="@string/app_name"
+                      android:targetActivity=".MainActivity">
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN" />
+                          <category android:name="android.intent.category.LAUNCHER" />
+                      </intent-filter>
+                  </activity-alias>
+
+                  <activity-alias
+                      android:name=".launcher.DarkLauncher"
+                      android:enabled="false"
+                      android:exported="true"
+                      android:icon="@mipmap/ic_launcher_dark"
+                      android:roundIcon="@mipmap/ic_launcher_dark_round"
+                      android:label="@string/app_name"
+                      android:targetActivity=".MainActivity">
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN" />
+                          <category android:name="android.intent.category.LAUNCHER" />
+                      </intent-filter>
+                  </activity-alias>
+
+                  <service
+                      android:name=".service.DownloadService"
+                      android:enabled="true"
+                      android:exported="false"
+                      android:foregroundServiceType="dataSync" />
+              </application>
+
+          </manifest>
+          EOF
+
+          cat > app/src/main/java/com/aria2/downloader/domain/model/AppSettings.kt <<'EOF'
+          package com.aria2.downloader.domain.model
+
+          data class AppSettings(
+              val themeMode: ThemeMode = ThemeMode.SYSTEM,
+              val maxConcurrentDownloads: Int = 3,
+              val split: Int = 8,
+              val maxConnectionPerServer: Int = 8,
+              val minSplitSizeMb: Int = 4,
+              val enableDht: Boolean = true,
+              val peerExchange: Boolean = true,
+              val localPeerDiscovery: Boolean = true,
+              val requireEncryption: Boolean = false,
+              val notificationsEnabled: Boolean = true,
+              val appIcon: AppIcon = AppIcon.DEFAULT,
+              val rpcToken: String = "aakash-aria2-rpc",
+              val downloadLocationPath: String = "/storage/emulated/0/Download",
+              val downloadLocationUri: String? = null,
+              val downloadLocationLabel: String? = null
+          )
+          EOF
+
+          cat > app/src/main/java/com/aria2/downloader/data/preferences/SettingsRepository.kt <<'EOF'
+          package com.aria2.downloader.data.preferences
+
+          import android.content.ComponentName
+          import android.content.Context
+          import android.content.Intent
+          import android.content.pm.PackageManager
+          import android.net.Uri
+          import androidx.datastore.preferences.core.Preferences
+          import androidx.datastore.preferences.core.booleanPreferencesKey
+          import androidx.datastore.preferences.core.edit
+          import androidx.datastore.preferences.core.intPreferencesKey
+          import androidx.datastore.preferences.core.stringPreferencesKey
+          import androidx.datastore.preferences.preferencesDataStore
+          import androidx.documentfile.provider.DocumentFile
+          import com.aria2.downloader.domain.model.AppIcon
+          import com.aria2.downloader.domain.model.AppSettings
+          import com.aria2.downloader.domain.model.ThemeMode
+          import dagger.hilt.android.qualifiers.ApplicationContext
+          import javax.inject.Inject
+          import javax.inject.Singleton
+          import kotlinx.coroutines.flow.Flow
+          import kotlinx.coroutines.flow.first
+          import kotlinx.coroutines.flow.map
+
+          private val Context.settingsDataStore by preferencesDataStore(name = "aria2_settings")
+
+          @Singleton
+          class SettingsRepository @Inject constructor(
+              @ApplicationContext private val context: Context
+          ) {
+              companion object {
+                  const val DEFAULT_DOWNLOAD_PATH: String = "/storage/emulated/0/Download"
+              }
+
+              private object Keys {
+                  val THEME_MODE = stringPreferencesKey("theme_mode")
+                  val MAX_CONCURRENT_DOWNLOADS = intPreferencesKey("max_concurrent_downloads")
+                  val SPLIT = intPreferencesKey("split")
+                  val MAX_CONNECTION_PER_SERVER = intPreferencesKey("max_connection_per_server")
+                  val MIN_SPLIT_SIZE_MB = intPreferencesKey("min_split_size_mb")
+                  val ENABLE_DHT = booleanPreferencesKey("enable_dht")
+                  val PEER_EXCHANGE = booleanPreferencesKey("peer_exchange")
+                  val LOCAL_PEER_DISCOVERY = booleanPreferencesKey("local_peer_discovery")
+                  val REQUIRE_ENCRYPTION = booleanPreferencesKey("require_encryption")
+                  val NOTIFICATIONS_ENABLED = booleanPreferencesKey("notifications_enabled")
+                  val APP_ICON = stringPreferencesKey("app_icon")
+                  val RPC_TOKEN = stringPreferencesKey("rpc_token")
+                  val DOWNLOAD_LOCATION_PATH = stringPreferencesKey("download_location_path")
+                  val DOWNLOAD_LOCATION_URI = stringPreferencesKey("download_location_uri")
+                  val DOWNLOAD_LOCATION_LABEL = stringPreferencesKey("download_location_label")
+              }
+
+              val settings: Flow<AppSettings> = context.settingsDataStore.data.map(::mapSettings)
+
+              suspend fun currentSettings(): AppSettings = settings.first()
+
+              suspend fun updateThemeMode(mode: ThemeMode) = updateString(Keys.THEME_MODE, mode.name)
+              suspend fun updateMaxConcurrentDownloads(value: Int) = updateInt(Keys.MAX_CONCURRENT_DOWNLOADS, value.coerceIn(1, 10))
+              suspend fun updateSplit(value: Int) = updateInt(Keys.SPLIT, value.coerceIn(1, 16))
+              suspend fun updateMaxConnectionPerServer(value: Int) = updateInt(Keys.MAX_CONNECTION_PER_SERVER, value.coerceIn(1, 16))
+              suspend fun updateMinSplitSize(value: Int) = updateInt(Keys.MIN_SPLIT_SIZE_MB, value.coerceIn(1, 32))
+              suspend fun updateEnableDht(enabled: Boolean) = updateBoolean(Keys.ENABLE_DHT, enabled)
+              suspend fun updatePeerExchange(enabled: Boolean) = updateBoolean(Keys.PEER_EXCHANGE, enabled)
+              suspend fun updateLocalPeerDiscovery(enabled: Boolean) = updateBoolean(Keys.LOCAL_PEER_DISCOVERY, enabled)
+              suspend fun updateRequireEncryption(enabled: Boolean) = updateBoolean(Keys.REQUIRE_ENCRYPTION, enabled)
+              suspend fun updateNotificationsEnabled(enabled: Boolean) = updateBoolean(Keys.NOTIFICATIONS_ENABLED, enabled)
+              suspend fun updateRpcToken(token: String) = updateString(Keys.RPC_TOKEN, token.ifBlank { "aakash-aria2-rpc" })
+
+              suspend fun updateAppIcon(icon: AppIcon) {
+                  updateString(Keys.APP_ICON, icon.name)
+                  applyLauncherIcon(icon)
+              }
+
+              suspend fun updateDownloadLocation(treeUri: Uri): Result<String> = runCatching {
+                  val flags = Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+                  context.contentResolver.takePersistableUriPermission(treeUri, flags)
+
+                  val tree = DocumentFile.fromTreeUri(context, treeUri)
+                      ?: error("The selected folder could not be opened.")
+                  require(tree.canWrite()) { "The selected folder is not writable." }
+
+                  val probeName = ".aria2_probe_${System.currentTimeMillis()}"
+                  val probe = tree.createFile("application/octet-stream", probeName)
+                      ?: error("Could not create a test file in the selected folder.")
+                  probe.delete()
+
+                  val label = tree.name?.takeIf { it.isNotBlank() } ?: "Custom folder"
+                  context.settingsDataStore.edit {
+                      it[Keys.DOWNLOAD_LOCATION_URI] = treeUri.toString()
+                      it[Keys.DOWNLOAD_LOCATION_LABEL] = label
+                      it[Keys.DOWNLOAD_LOCATION_PATH] = DEFAULT_DOWNLOAD_PATH
+                  }
+                  label
+              }
+
+              suspend fun clearDownloadLocation() {
+                  context.settingsDataStore.edit {
+                      it[Keys.DOWNLOAD_LOCATION_PATH] = DEFAULT_DOWNLOAD_PATH
+                      it.remove(Keys.DOWNLOAD_LOCATION_URI)
+                      it.remove(Keys.DOWNLOAD_LOCATION_LABEL)
+                  }
+              }
+
+              fun applyLauncherIcon(icon: AppIcon) {
+                  val packageManager = context.packageManager
+                  val packageName = context.packageName
+                  val defaultComponent = ComponentName(packageName, "com.aria2.downloader.MainActivity")
+                  val accentComponent = ComponentName(packageName, "com.aria2.downloader.launcher.AccentLauncher")
+                  val darkComponent = ComponentName(packageName, "com.aria2.downloader.launcher.DarkLauncher")
+
+                  val enabled = when (icon) {
+                      AppIcon.DEFAULT -> defaultComponent
+                      AppIcon.ACCENT -> accentComponent
+                      AppIcon.DARK -> darkComponent
+                  }
+
+                  listOf(defaultComponent, accentComponent, darkComponent).forEach { component ->
+                      packageManager.setComponentEnabledSetting(
+                          component,
+                          if (component == enabled) PackageManager.COMPONENT_ENABLED_STATE_ENABLED
+                          else PackageManager.COMPONENT_ENABLED_STATE_DISABLED,
+                          PackageManager.DONT_KILL_APP
+                      )
+                  }
+              }
+
+              private fun mapSettings(preferences: Preferences): AppSettings = AppSettings(
+                  themeMode = enumValueOfOrNull(preferences[Keys.THEME_MODE], ThemeMode.SYSTEM),
+                  maxConcurrentDownloads = preferences[Keys.MAX_CONCURRENT_DOWNLOADS] ?: 3,
+                  split = preferences[Keys.SPLIT] ?: 8,
+                  maxConnectionPerServer = preferences[Keys.MAX_CONNECTION_PER_SERVER] ?: 8,
+                  minSplitSizeMb = preferences[Keys.MIN_SPLIT_SIZE_MB] ?: 4,
+                  enableDht = preferences[Keys.ENABLE_DHT] ?: true,
+                  peerExchange = preferences[Keys.PEER_EXCHANGE] ?: true,
+                  localPeerDiscovery = preferences[Keys.LOCAL_PEER_DISCOVERY] ?: true,
+                  requireEncryption = preferences[Keys.REQUIRE_ENCRYPTION] ?: false,
+                  notificationsEnabled = preferences[Keys.NOTIFICATIONS_ENABLED] ?: true,
+                  appIcon = enumValueOfOrNull(preferences[Keys.APP_ICON], AppIcon.DEFAULT),
+                  rpcToken = preferences[Keys.RPC_TOKEN] ?: "aakash-aria2-rpc",
+                  downloadLocationPath = preferences[Keys.DOWNLOAD_LOCATION_PATH] ?: DEFAULT_DOWNLOAD_PATH,
+                  downloadLocationUri = preferences[Keys.DOWNLOAD_LOCATION_URI],
+                  downloadLocationLabel = preferences[Keys.DOWNLOAD_LOCATION_LABEL]
+              )
+
+              private suspend fun updateString(key: Preferences.Key<String>, value: String) {
+                  context.settingsDataStore.edit { it[key] = value }
+              }
+
+              private suspend fun updateInt(key: Preferences.Key<Int>, value: Int) {
+                  context.settingsDataStore.edit { it[key] = value }
+              }
+
+              private suspend fun updateBoolean(key: Preferences.Key<Boolean>, value: Boolean) {
+                  context.settingsDataStore.edit { it[key] = value }
+              }
+
+              private fun <T : Enum<T>> enumValueOfOrNull(value: String?, default: T): T =
+                  runCatching { java.lang.Enum.valueOf(default.declaringJavaClass, value ?: default.name) }
+                      .getOrDefault(default)
+          }
+          EOF
+
+          cat > app/src/main/java/com/aria2/downloader/ui/permissions/PermissionGate.kt <<'EOF'
+          package com.aria2.downloader.ui.permissions
+
+          import android.Manifest
+          import android.content.Intent
+          import android.net.Uri
+          import android.os.Build
+          import android.os.Environment
+          import android.provider.Settings
+          import androidx.activity.ComponentActivity
+          import androidx.activity.compose.rememberLauncherForActivityResult
+          import androidx.activity.result.contract.ActivityResultContracts.RequestMultiplePermissions
+          import androidx.compose.foundation.layout.Arrangement
+          import androidx.compose.foundation.layout.Box
+          import androidx.compose.foundation.layout.Column
+          import androidx.compose.foundation.layout.fillMaxSize
+          import androidx.compose.foundation.layout.fillMaxWidth
+          import androidx.compose.foundation.layout.navigationBarsPadding
+          import androidx.compose.foundation.layout.padding
+          import androidx.compose.material.icons.Icons
+          import androidx.compose.material.icons.filled.Security
+          import androidx.compose.material3.Button
+          import androidx.compose.material3.Card
+          import androidx.compose.material3.CardDefaults
+          import androidx.compose.material3.Icon
+          import androidx.compose.material3.MaterialTheme
+          import androidx.compose.material3.OutlinedButton
+          import androidx.compose.material3.Text
+          import androidx.compose.runtime.Composable
+          import androidx.compose.runtime.DisposableEffect
+          import androidx.compose.runtime.LaunchedEffect
+          import androidx.compose.runtime.getValue
+          import androidx.compose.runtime.mutableStateOf
+          import androidx.compose.runtime.remember
+          import androidx.compose.runtime.setValue
+          import androidx.compose.ui.Alignment
+          import androidx.compose.ui.Modifier
+          import androidx.compose.ui.unit.dp
+          import androidx.core.content.ContextCompat
+          import androidx.lifecycle.Lifecycle
+          import androidx.lifecycle.LifecycleEventObserver
+
+          @Composable
+          fun PermissionAwareContent(
+              activity: ComponentActivity,
+              content: @Composable () -> Unit
+          ) {
+              val runtimePermissions = remember { buildRuntimePermissions(activity) }
+              var continueWithoutAll by remember { mutableStateOf(false) }
+              var autoOpenedAllFiles by remember { mutableStateOf(false) }
+              var requestNonce by remember { mutableStateOf(0) }
+              var permissionState by remember(requestNonce) {
+                  mutableStateOf(evaluatePermissionState(activity, runtimePermissions))
+              }
+
+              val launcher = rememberLauncherForActivityResult(RequestMultiplePermissions()) {
+                  permissionState = evaluatePermissionState(activity, runtimePermissions)
+              }
+
+              DisposableEffect(activity, runtimePermissions) {
+                  val observer = LifecycleEventObserver { _, event ->
+                      if (event == Lifecycle.Event.ON_RESUME) {
+                          permissionState = evaluatePermissionState(activity, runtimePermissions)
+                      }
+                  }
+                  activity.lifecycle.addObserver(observer)
+                  onDispose { activity.lifecycle.removeObserver(observer) }
+              }
+
+              LaunchedEffect(runtimePermissions, requestNonce, continueWithoutAll) {
+                  if (continueWithoutAll) return@LaunchedEffect
+
+                  if (permissionState.missingRuntimePermissions.isNotEmpty()) {
+                      launcher.launch(permissionState.missingRuntimePermissions.toTypedArray())
+                  } else if (permissionState.requiresAllFiles && !permissionState.allFilesGranted && !autoOpenedAllFiles) {
+                      autoOpenedAllFiles = true
+                      activity.startActivity(createAllFilesAccessIntent(activity))
+                  }
+              }
+
+              if (permissionState.allGranted || continueWithoutAll) {
+                  content()
+              } else {
+                  PermissionGate(
+                      state = permissionState,
+                      onGrantRuntime = {
+                          requestNonce++
+                          launcher.launch(permissionState.missingRuntimePermissions.toTypedArray())
+                      },
+                      onGrantAllFiles = {
+                          activity.startActivity(createAllFilesAccessIntent(activity))
+                      },
+                      onOpenAppSettings = {
+                          val intent = Intent(
+                              Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                              Uri.fromParts("package", activity.packageName, null)
+                          )
+                          activity.startActivity(intent)
+                      },
+                      onContinueLimited = { continueWithoutAll = true }
+                  )
+              }
+          }
+
+          @Composable
+          private fun PermissionGate(
+              state: PermissionState,
+              onGrantRuntime: () -> Unit,
+              onGrantAllFiles: () -> Unit,
+              onOpenAppSettings: () -> Unit,
+              onContinueLimited: () -> Unit
+          ) {
+              Box(
+                  modifier = Modifier
+                      .fillMaxSize()
+                      .navigationBarsPadding(),
+                  contentAlignment = Alignment.Center
+              ) {
+                  Card(
+                      modifier = Modifier
+                          .fillMaxWidth()
+                          .padding(24.dp),
+                      colors = CardDefaults.cardColors(
+                          containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f)
+                      )
+                  ) {
+                      Column(
+                          modifier = Modifier.padding(20.dp),
+                          verticalArrangement = Arrangement.spacedBy(14.dp)
+                      ) {
+                          Icon(Icons.Default.Security, contentDescription = null)
+                          Text("Permission setup", style = MaterialTheme.typography.headlineSmall)
+
+                          Text(
+                              "This build uses the public Download folder by default: /storage/emulated/0/Download",
+                              style = MaterialTheme.typography.bodyMedium
+                          )
+
+                          if (state.missingRuntimePermissions.isNotEmpty()) {
+                              Text(
+                                  "Missing runtime permissions: ${state.permissionLabels.joinToString()}",
+                                  style = MaterialTheme.typography.bodyMedium,
+                                  color = MaterialTheme.colorScheme.onSurfaceVariant
+                              )
+                              Button(onClick = onGrantRuntime, modifier = Modifier.fillMaxWidth()) {
+                                  Text("Grant media and notification permissions")
+                              }
+                          }
+
+                          if (state.requiresAllFiles && !state.allFilesGranted) {
+                              Text(
+                                  "Storage access is still missing. Grant All files access so aria2 can save directly into /storage/emulated/0/Download.",
+                                  style = MaterialTheme.typography.bodyMedium,
+                                  color = MaterialTheme.colorScheme.onSurfaceVariant
+                              )
+                              Button(onClick = onGrantAllFiles, modifier = Modifier.fillMaxWidth()) {
+                                  Text("Grant storage access")
+                              }
+                          }
+
+                          if (state.showRationale) {
+                              Text(
+                                  "If you denied a permission, use the buttons below to retry or open app settings.",
+                                  style = MaterialTheme.typography.bodySmall,
+                                  color = MaterialTheme.colorScheme.onSurfaceVariant
+                              )
+                          }
+
+                          OutlinedButton(onClick = onOpenAppSettings, modifier = Modifier.fillMaxWidth()) {
+                              Text("Open app settings")
+                          }
+
+                          OutlinedButton(onClick = onContinueLimited, modifier = Modifier.fillMaxWidth()) {
+                              Text("Continue for now")
+                          }
+                      }
+                  }
+              }
+          }
+
+          private data class PermissionState(
+              val missingRuntimePermissions: List<String>,
+              val permissionLabels: List<String>,
+              val allFilesGranted: Boolean,
+              val requiresAllFiles: Boolean,
+              val showRationale: Boolean
+          ) {
+              val allGranted: Boolean
+                  get() = missingRuntimePermissions.isEmpty() && (!requiresAllFiles || allFilesGranted)
+          }
+
+          private fun buildRuntimePermissions(activity: ComponentActivity): List<String> {
+              val permissions = mutableListOf<String>()
+
+              if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                  permissions += Manifest.permission.POST_NOTIFICATIONS
+                  permissions += Manifest.permission.READ_MEDIA_IMAGES
+                  permissions += Manifest.permission.READ_MEDIA_VIDEO
+                  permissions += Manifest.permission.READ_MEDIA_AUDIO
+              } else {
+                  permissions += Manifest.permission.READ_EXTERNAL_STORAGE
+              }
+
+              if (Build.VERSION.SDK_INT <= Build.VERSION_CODES.P) {
+                  permissions += Manifest.permission.WRITE_EXTERNAL_STORAGE
+              }
+
+              return permissions.filter {
+                  ContextCompat.checkSelfPermission(activity, it) != android.content.pm.PackageManager.PERMISSION_GRANTED
+              }
+          }
+
+          private fun evaluatePermissionState(
+              activity: ComponentActivity,
+              runtimePermissions: List<String>
+          ): PermissionState {
+              val missing = runtimePermissions.filter {
+                  ContextCompat.checkSelfPermission(activity, it) != android.content.pm.PackageManager.PERMISSION_GRANTED
+              }
+
+              val labels = missing.mapNotNull { permissionLabel(it) }.distinct()
+
+              val requiresAllFiles = Build.VERSION.SDK_INT >= Build.VERSION_CODES.R
+              val allFilesGranted = if (requiresAllFiles) Environment.isExternalStorageManager() else true
+
+              return PermissionState(
+                  missingRuntimePermissions = missing,
+                  permissionLabels = labels,
+                  allFilesGranted = allFilesGranted,
+                  requiresAllFiles = requiresAllFiles,
+                  showRationale = missing.any(activity::shouldShowRequestPermissionRationale)
+              )
+          }
+
+          private fun permissionLabel(permission: String): String? = when (permission) {
+              Manifest.permission.POST_NOTIFICATIONS -> "Notifications"
+              Manifest.permission.READ_MEDIA_IMAGES,
+              Manifest.permission.READ_MEDIA_VIDEO -> "Photos and videos"
+              Manifest.permission.READ_MEDIA_AUDIO -> "Music and audio"
+              Manifest.permission.READ_EXTERNAL_STORAGE,
+              Manifest.permission.WRITE_EXTERNAL_STORAGE -> "Storage"
+              else -> null
+          }
+
+          private fun createAllFilesAccessIntent(activity: ComponentActivity): Intent {
+              return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                  Intent(
+                      Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
+                      Uri.parse("package:${activity.packageName}")
+                  ).apply {
+                      addCategory(Intent.CATEGORY_DEFAULT)
+                  }
+              } else {
+                  Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+                      data = Uri.fromParts("package", activity.packageName, null)
+                  }
+              }
+          }
+          EOF
+
+          cat > app/src/main/java/com/aria2/downloader/ui/screens/settings/SettingsViewModel.kt <<'EOF'
+          package com.aria2.downloader.ui.screens.settings
+
+          import android.net.Uri
+          import androidx.lifecycle.ViewModel
+          import androidx.lifecycle.viewModelScope
+          import com.aria2.downloader.data.preferences.SettingsRepository
+          import com.aria2.downloader.domain.engine.DownloadEngine
+          import com.aria2.downloader.domain.model.AppIcon
+          import com.aria2.downloader.domain.model.AppSettings
+          import com.aria2.downloader.domain.model.ThemeMode
+          import dagger.hilt.android.lifecycle.HiltViewModel
+          import javax.inject.Inject
+          import kotlinx.coroutines.flow.MutableStateFlow
+          import kotlinx.coroutines.flow.SharingStarted
+          import kotlinx.coroutines.flow.StateFlow
+          import kotlinx.coroutines.flow.asStateFlow
+          import kotlinx.coroutines.flow.stateIn
+          import kotlinx.coroutines.launch
+
+          @HiltViewModel
+          class SettingsViewModel @Inject constructor(
+              private val settingsRepository: SettingsRepository,
+              private val downloadEngine: DownloadEngine
+          ) : ViewModel() {
+
+              val settings = settingsRepository.settings
+                  .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), AppSettings())
+
+              private val _message = MutableStateFlow<String?>(null)
+              val message: StateFlow<String?> = _message.asStateFlow()
+
+              fun updateTheme(mode: ThemeMode) = viewModelScope.launch { settingsRepository.updateThemeMode(mode) }
+
+              fun updateConcurrent(value: Int) = viewModelScope.launch {
+                  settingsRepository.updateMaxConcurrentDownloads(value)
+                  runCatching { downloadEngine.applyGlobalSettings() }
+              }
+
+              fun updateSplit(value: Int) = viewModelScope.launch {
+                  settingsRepository.updateSplit(value)
+                  runCatching { downloadEngine.applyGlobalSettings() }
+              }
+
+              fun updateConnections(value: Int) = viewModelScope.launch {
+                  settingsRepository.updateMaxConnectionPerServer(value)
+                  runCatching { downloadEngine.applyGlobalSettings() }
+              }
+
+              fun updateMinSplit(value: Int) = viewModelScope.launch {
+                  settingsRepository.updateMinSplitSize(value)
+                  runCatching { downloadEngine.applyGlobalSettings() }
+              }
+
+              fun updateDht(enabled: Boolean) = viewModelScope.launch {
+                  settingsRepository.updateEnableDht(enabled)
+                  runCatching { downloadEngine.applyGlobalSettings() }
+              }
+
+              fun updatePex(enabled: Boolean) = viewModelScope.launch {
+                  settingsRepository.updatePeerExchange(enabled)
+                  runCatching { downloadEngine.applyGlobalSettings() }
+              }
+
+              fun updateLpd(enabled: Boolean) = viewModelScope.launch {
+                  settingsRepository.updateLocalPeerDiscovery(enabled)
+                  runCatching { downloadEngine.applyGlobalSettings() }
+              }
+
+              fun updateEncryption(enabled: Boolean) = viewModelScope.launch {
+                  settingsRepository.updateRequireEncryption(enabled)
+                  runCatching { downloadEngine.applyGlobalSettings() }
+              }
+
+              fun updateNotifications(enabled: Boolean) = viewModelScope.launch {
+                  settingsRepository.updateNotificationsEnabled(enabled)
+              }
+
+              fun updateIcon(icon: AppIcon) = viewModelScope.launch {
+                  settingsRepository.updateAppIcon(icon)
+              }
+
+              fun updateDownloadLocation(uri: Uri) = viewModelScope.launch {
+                  _message.value = settingsRepository.updateDownloadLocation(uri)
+                      .fold(
+                          onSuccess = { "Download location set to $it" },
+                          onFailure = { it.message ?: "Could not use the selected folder." }
+                      )
+              }
+
+              fun useDefaultDownloadLocation() = viewModelScope.launch {
+                  settingsRepository.clearDownloadLocation()
+                  _message.value = "Download location set to /storage/emulated/0/Download"
+              }
+
+              fun consumeMessage() {
+                  _message.value = null
+              }
+          }
+          EOF
+
+          cat > app/src/main/java/com/aria2/downloader/domain/engine/Aria2ProcessManager.kt <<'EOF'
+          package com.aria2.downloader.domain.engine
+
+          import android.content.Context
+          import android.os.Build
+          import com.aria2.downloader.data.preferences.SettingsRepository
+          import com.aria2.downloader.domain.model.AppSettings
+          import dagger.hilt.android.qualifiers.ApplicationContext
+          import java.io.File
+          import javax.inject.Inject
+          import javax.inject.Singleton
+          import kotlinx.coroutines.Dispatchers
+          import kotlinx.coroutines.delay
+          import kotlinx.coroutines.withContext
+
+          @Singleton
+          class Aria2ProcessManager @Inject constructor(
+              @ApplicationContext private val context: Context,
+              private val settingsRepository: SettingsRepository,
+              private val rpcClient: Aria2RpcClient
+          ) {
+              @Volatile
+              private var process: Process? = null
+
+              private val stagingDirectory: File
+                  get() = File(
+                      context.getExternalFilesDir(android.os.Environment.DIRECTORY_DOWNLOADS),
+                      "Aria2Downloads"
+                  ).apply { mkdirs() }
+
+              fun resolveDownloadDirectory(settings: AppSettings): File {
+                  return if (settings.downloadLocationUri == null) {
+                      File(settings.downloadLocationPath).apply { mkdirs() }
+                  } else {
+                      stagingDirectory
+                  }
+              }
+
+              suspend fun ensureRunning() = withContext(Dispatchers.IO) {
+                  if (rpcClient.isAvailable()) {
+                      return@withContext
+                  }
+
+                  val binary = installBinaryIfNeeded()
+                  val wrapper = installWrapper(binary)
+                  val settings = settingsRepository.currentSettings()
+                  val targetDownloadDir = resolveDownloadDirectory(settings)
+
+                  if (process?.isAlive == true) {
+                      process?.destroy()
+                      process = null
+                  }
+
+                  val homeDir = File(context.filesDir, "aria2/home").apply { mkdirs() }
+                  val sessionFile = File(homeDir, "session.txt").apply { if (!exists()) createNewFile() }
+                  val logFile = File(homeDir, "aria2.log")
+
+                  val aria2Args = mutableListOf(
+                      "--enable-rpc=true",
+                      "--rpc-listen-all=false",
+                      "--rpc-listen-port=6800",
+                      "--rpc-secret=${settings.rpcToken}",
+                      "--dir=${targetDownloadDir.absolutePath}",
+                      "--continue=true",
+                      "--auto-file-renaming=true",
+                      "--allow-overwrite=false",
+                      "--max-concurrent-downloads=${settings.maxConcurrentDownloads}",
+                      "--split=${settings.split}",
+                      "--max-connection-per-server=${settings.maxConnectionPerServer}",
+                      "--min-split-size=${settings.minSplitSizeMb}M",
+                      "--file-allocation=none",
+                      "--summary-interval=0",
+                      "--disk-cache=16M",
+                      "--enable-dht=${settings.enableDht}",
+                      "--enable-peer-exchange=${settings.peerExchange}",
+                      "--bt-enable-lpd=${settings.localPeerDiscovery}",
+                      "--bt-require-crypto=${settings.requireEncryption}",
+                      "--follow-torrent=true",
+                      "--follow-metalink=true",
+                      "--bt-save-metadata=true",
+                      "--rpc-save-upload-metadata=true",
+                      "--save-session=${sessionFile.absolutePath}",
+                      "--input-file=${sessionFile.absolutePath}",
+                      "--save-session-interval=30",
+                      "--seed-time=0",
+                      "--log=${logFile.absolutePath}"
+                  )
+
+                  val command = mutableListOf("/system/bin/sh", wrapper.absolutePath).apply {
+                      addAll(aria2Args)
+                  }
+
+                  process = ProcessBuilder(command)
+                      .directory(homeDir)
+                      .redirectErrorStream(true)
+                      .redirectOutput(ProcessBuilder.Redirect.appendTo(logFile))
+                      .start()
+
+                  repeat(30) {
+                      if (rpcClient.isAvailable()) {
+                          return@withContext
+                      }
+                      delay(300)
+                  }
+
+                  throw IllegalStateException(
+                      "aria2 daemon did not start. This bundled build currently supports arm64-v8a devices only."
+                  )
+              }
+
+              suspend fun stop() = withContext(Dispatchers.IO) {
+                  runCatching { rpcClient.shutdown() }
+                  process?.destroy()
+                  process = null
+              }
+
+              private fun installBinaryIfNeeded(): File {
+                  require(
+                      Build.SUPPORTED_ABIS.any { it.equals("arm64-v8a", ignoreCase = true) }
+                  ) { "The bundled aria2 binary only supports arm64-v8a devices." }
+
+                  val binDir = File(context.filesDir, "aria2/bin").apply { mkdirs() }
+                  val outFile = File(binDir, "aria2c")
+                  if (!outFile.exists() || outFile.length() == 0L) {
+                      context.assets.open("bin/aria2c-arm64-v8a").use { input ->
+                          outFile.outputStream().use { output -> input.copyTo(output) }
+                      }
+                  }
+                  outFile.setExecutable(true)
+
+                  val wrapper = File(binDir, "aria2-wrapper.sh")
+                  if (wrapper.exists()) {
+                      wrapper.setExecutable(true)
+                  }
+
+                  return outFile
+              }
+
+              private fun installWrapper(binary: File): File {
+                  val wrapper = File(binary.parentFile, "aria2-wrapper.sh")
+                  val script = """
+                      |#!/system/bin/sh
+                      |BIN_DIR="${'$'}(CDPATH= cd -- "${'$'}(dirname -- "${'$'}0")" && pwd)"
+                      |DNS1="${'$'}(getprop net.dns1)"
+                      |DNS2="${'$'}(getprop net.dns2)"
+                      |if [ -d /etc/security/cacerts ]; then
+                      |  cat /etc/security/cacerts/* | "${'$'}BIN_DIR/aria2c" \
+                      |    --ca-certificate=/proc/self/fd/0 \
+                      |    --async-dns \
+                      |    --async-dns-server="${'$'}{DNS1},${'$'}{DNS2}" \
+                      |    "${'$'}@"
+                      |else
+                      |  "${'$'}BIN_DIR/aria2c" "${'$'}@"
+                      |fi
+                  """.trimMargin()
+
+                  if (!wrapper.exists() || wrapper.readText() != script) {
+                      wrapper.writeText(script)
+                  }
+                  wrapper.setExecutable(true)
+                  return wrapper
+              }
+          }
+          EOF
+
+          cat > app/src/main/java/com/aria2/downloader/domain/engine/DownloadEngine.kt <<'EOF'
+          package com.aria2.downloader.domain.engine
+
+          import android.content.Context
+          import android.net.Uri
+          import androidx.core.content.ContextCompat
+          import androidx.documentfile.provider.DocumentFile
+          import com.aria2.downloader.data.preferences.SettingsRepository
+          import com.aria2.downloader.data.repository.DownloadRepository
+          import com.aria2.downloader.domain.model.AppSettings
+          import com.aria2.downloader.domain.model.DownloadInfo
+          import com.aria2.downloader.domain.model.DownloadSourceType
+          import com.aria2.downloader.domain.model.DownloadStatus
+          import com.aria2.downloader.service.DownloadService
+          import dagger.hilt.android.qualifiers.ApplicationContext
+          import java.io.File
+          import java.util.UUID
+          import javax.inject.Inject
+          import javax.inject.Singleton
+          import kotlinx.coroutines.Dispatchers
+          import kotlinx.coroutines.flow.first
+          import kotlinx.coroutines.withContext
+
+          @Singleton
+          class DownloadEngine @Inject constructor(
+              @ApplicationContext private val context: Context,
+              private val repository: DownloadRepository,
+              private val validator: URLValidator,
+              private val processManager: Aria2ProcessManager,
+              private val rpcClient: Aria2RpcClient,
+              private val settingsRepository: SettingsRepository
+          ) {
+              suspend fun enqueueLink(input: String, selectedFiles: String? = null): Result<DownloadInfo> = runCatching {
+                  val validation = validator.inspect(input)
+                  val existingDuplicate = repository.observeAll().first().firstOrNull {
+                      it.source == validation.normalizedInput && it.isActive
+                  }
+                  if (existingDuplicate != null) {
+                      return@runCatching existingDuplicate
+                  }
+
+                  processManager.ensureRunning()
+                  val settings = settingsRepository.currentSettings()
+                  applyGlobalSettings(settings)
+                  val targetDir = processManager.resolveDownloadDirectory(settings)
+
+                  val initial = DownloadInfo(
+                      id = UUID.randomUUID().toString(),
+                      source = validation.normalizedInput,
+                      fileName = validation.fileName,
+                      sourceType = validation.sourceType,
+                      destinationDir = displayDestination(settings),
+                      totalBytes = validation.totalBytes,
+                      status = DownloadStatus.VALIDATING,
+                      mimeType = validation.mimeType,
+                      selectedFiles = selectedFiles
+                  )
+                  repository.upsert(initial)
+
+                  val gid = rpcClient.addUri(
+                      validation.normalizedInput,
+                      buildDownloadOptions(
+                          settings = settings,
+                          targetDir = targetDir,
+                          fileName = validation.fileName,
+                          selectedFiles = selectedFiles,
+                          includeOut = validation.sourceType == DownloadSourceType.DIRECT
+                      )
+                  )
+
+                  val queued = initial.copy(
+                      aria2Gid = gid,
+                      status = if (validation.sourceType == DownloadSourceType.MAGNET) DownloadStatus.METADATA else DownloadStatus.QUEUED,
+                      updatedAt = System.currentTimeMillis()
+                  )
+                  repository.upsert(queued)
+                  ensureForegroundService()
+                  syncNow().all.firstOrNull { it.id == queued.id } ?: queued
+              }
+
+              suspend fun enqueueImportedDocument(
+                  uri: Uri,
+                  type: DownloadSourceType,
+                  selectedFiles: String? = null
+              ): Result<DownloadInfo> = runCatching {
+                  require(type == DownloadSourceType.TORRENT || type == DownloadSourceType.METALINK) {
+                      "Only .torrent and metalink files can be imported."
+                  }
+                  val localCopy = copyImportToInternalStorage(uri)
+                  val displayName = DocumentFile.fromSingleUri(context, uri)?.name ?: localCopy.name
+                  enqueueImportedFile(localCopy, displayName, type, selectedFiles)
+              }
+
+              suspend fun pause(downloadId: String) {
+                  val record = repository.getById(downloadId) ?: return
+                  val gid = record.aria2Gid ?: return
+                  processManager.ensureRunning()
+                  rpcClient.pause(gid)
+                  repository.upsert(record.copy(status = DownloadStatus.PAUSED, updatedAt = System.currentTimeMillis()))
+              }
+
+              suspend fun resume(downloadId: String) {
+                  val record = repository.getById(downloadId) ?: return
+                  val gid = record.aria2Gid ?: return
+                  processManager.ensureRunning()
+                  rpcClient.unpause(gid)
+                  ensureForegroundService()
+                  repository.upsert(
+                      record.copy(
+                          status = DownloadStatus.QUEUED,
+                          updatedAt = System.currentTimeMillis(),
+                          errorMessage = null
+                      )
+                  )
+              }
+
+              suspend fun cancel(downloadId: String) {
+                  val record = repository.getById(downloadId) ?: return
+                  record.aria2Gid?.let { gid ->
+                      processManager.ensureRunning()
+                      rpcClient.forceRemove(gid)
+                  }
+                  repository.upsert(
+                      record.copy(
+                          status = DownloadStatus.CANCELLED,
+                          updatedAt = System.currentTimeMillis(),
+                          completedAt = System.currentTimeMillis()
+                      )
+                  )
+              }
+
+              suspend fun delete(downloadId: String) {
+                  val record = repository.getById(downloadId) ?: return
+                  record.aria2Gid?.let { gid ->
+                      runCatching {
+                          processManager.ensureRunning()
+                          rpcClient.forceRemove(gid)
+                      }
+                  }
+
+                  val settings = settingsRepository.currentSettings()
+                  runCatching {
+                      record.filePath?.let { File(it).takeIf(File::exists)?.delete() }
+                      if (settings.downloadLocationUri != null && record.status == DownloadStatus.COMPLETED) {
+                          val tree = DocumentFile.fromTreeUri(context, Uri.parse(settings.downloadLocationUri))
+                          tree?.findFile(record.fileName)?.delete()
+                      }
+                  }
+                  repository.deleteById(downloadId)
+              }
+
+              suspend fun moveQueue(downloadId: String, delta: Int) {
+                  val record = repository.getById(downloadId) ?: return
+                  val gid = record.aria2Gid ?: return
+                  processManager.ensureRunning()
+                  rpcClient.changePosition(gid, delta, "POS_CUR")
+                  syncNow()
+              }
+
+              suspend fun moveQueueToTop(downloadId: String) {
+                  val record = repository.getById(downloadId) ?: return
+                  val gid = record.aria2Gid ?: return
+                  processManager.ensureRunning()
+                  rpcClient.changePosition(gid, 0, "POS_SET")
+                  syncNow()
+              }
+
+              suspend fun retry(downloadId: String): Result<DownloadInfo> {
+                  val record = repository.getById(downloadId)
+                      ?: return Result.failure(IllegalArgumentException("Download not found"))
+                  return when (record.sourceType) {
+                      DownloadSourceType.TORRENT ->
+                          runCatching {
+                              enqueueImportedFile(
+                                  File(record.source),
+                                  record.fileName,
+                                  DownloadSourceType.TORRENT,
+                                  record.selectedFiles
+                              )
+                          }
+
+                      DownloadSourceType.METALINK ->
+                          runCatching {
+                              enqueueImportedFile(
+                                  File(record.source),
+                                  record.fileName,
+                                  DownloadSourceType.METALINK,
+                                  record.selectedFiles
+                              )
+                          }
+
+                      else -> enqueueLink(record.source, record.selectedFiles)
+                  }
+              }
+
+              suspend fun syncNow(): SyncSnapshot {
+                  processManager.ensureRunning()
+                  val settings = settingsRepository.currentSettings()
+                  applyGlobalSettings(settings)
+                  val active = rpcClient.tellActive()
+                  val waiting = rpcClient.tellWaiting()
+                  val stopped = rpcClient.tellStopped(num = 200)
+                  val workingDir = processManager.resolveDownloadDirectory(settings).absolutePath
+
+                  val mapped = (active + waiting + stopped).map { task ->
+                      val existing = repository.getByGid(task.gid)
+                      val baseDestination = existing?.destinationDir?.takeIf { it.isNotBlank() } ?: displayDestination(settings)
+                      var model = DownloadInfo(
+                          id = existing?.id ?: UUID.randomUUID().toString(),
+                          aria2Gid = task.gid,
+                          source = existing?.source ?: task.source,
+                          fileName = if (task.fileName.isBlank()) existing?.fileName ?: "download-${task.gid}" else task.fileName,
+                          sourceType = existing?.sourceType ?: task.sourceType,
+                          destinationDir = baseDestination,
+                          totalBytes = if (task.totalLength > 0) task.totalLength else existing?.totalBytes ?: 0L,
+                          completedBytes = task.completedLength,
+                          downloadSpeedBytes = task.downloadSpeed,
+                          uploadSpeedBytes = task.uploadSpeed,
+                          connections = task.connections,
+                          status = task.status,
+                          mimeType = existing?.mimeType,
+                          createdAt = existing?.createdAt ?: System.currentTimeMillis(),
+                          updatedAt = System.currentTimeMillis(),
+                          completedAt = if (task.status == DownloadStatus.COMPLETED) System.currentTimeMillis() else existing?.completedAt,
+                          errorCode = task.errorCode,
+                          errorMessage = task.errorMessage,
+                          selectedFiles = existing?.selectedFiles ?: task.selectedFiles,
+                          infoHash = task.infoHash ?: existing?.infoHash
+                      )
+
+                      if (task.status == DownloadStatus.COMPLETED) {
+                          val exported = exportToCustomLocationIfNeeded(
+                              sourcePath = task.savePath,
+                              fileName = model.fileName,
+                              settings = settings,
+                              currentDestination = existing?.destinationDir
+                          )
+                          if (exported != null) {
+                              model = model.copy(destinationDir = exported)
+                          } else if (existing?.destinationDir != null && existing.destinationDir != workingDir) {
+                              model = model.copy(destinationDir = existing.destinationDir)
+                          }
+                      }
+                      model
+                  }
+
+                  if (mapped.isNotEmpty()) {
+                      repository.upsertAll(mapped)
+                  }
+
+                  val all = repository.observeAll().first()
+                  val activeVisible = all.filter {
+                      it.status in setOf(
+                          DownloadStatus.QUEUED,
+                          DownloadStatus.VALIDATING,
+                          DownloadStatus.METADATA,
+                          DownloadStatus.DOWNLOADING,
+                          DownloadStatus.PAUSED
+                      )
+                  }
+                  return SyncSnapshot(
+                      all = all,
+                      active = activeVisible,
+                      totalDownloadSpeed = activeVisible.sumOf { it.downloadSpeedBytes }
+                  )
+              }
+
+              suspend fun applyGlobalSettings() {
+                  applyGlobalSettings(settingsRepository.currentSettings())
+              }
+
+              private suspend fun applyGlobalSettings(settings: AppSettings) {
+                  rpcClient.changeGlobalOption(
+                      mapOf(
+                          "max-concurrent-downloads" to settings.maxConcurrentDownloads.toString(),
+                          "split" to settings.split.toString(),
+                          "max-connection-per-server" to settings.maxConnectionPerServer.toString(),
+                          "min-split-size" to "${settings.minSplitSizeMb}M",
+                          "enable-dht" to settings.enableDht.toString(),
+                          "enable-peer-exchange" to settings.peerExchange.toString(),
+                          "bt-enable-lpd" to settings.localPeerDiscovery.toString(),
+                          "bt-require-crypto" to settings.requireEncryption.toString()
+                      )
+                  )
+              }
+
+              data class SyncSnapshot(
+                  val all: List<DownloadInfo>,
+                  val active: List<DownloadInfo>,
+                  val totalDownloadSpeed: Long
+              )
+
+              private suspend fun enqueueImportedFile(
+                  localFile: File,
+                  displayName: String,
+                  type: DownloadSourceType,
+                  selectedFiles: String?
+              ): DownloadInfo {
+                  processManager.ensureRunning()
+                  val settings = settingsRepository.currentSettings()
+                  applyGlobalSettings(settings)
+                  val targetDir = processManager.resolveDownloadDirectory(settings)
+
+                  val initial = DownloadInfo(
+                      id = UUID.randomUUID().toString(),
+                      source = localFile.absolutePath,
+                      fileName = displayName,
+                      sourceType = type,
+                      destinationDir = displayDestination(settings),
+                      status = DownloadStatus.VALIDATING,
+                      selectedFiles = selectedFiles
+                  )
+                  repository.upsert(initial)
+
+                  val gid = when (type) {
+                      DownloadSourceType.TORRENT ->
+                          rpcClient.addTorrent(
+                              localFile.readBytes(),
+                              buildDownloadOptions(settings, targetDir, displayName, selectedFiles, includeOut = false)
+                          )
+
+                      DownloadSourceType.METALINK ->
+                          rpcClient.addMetalink(
+                              localFile.readBytes(),
+                              buildDownloadOptions(settings, targetDir, displayName, selectedFiles, includeOut = false)
+                          ).first()
+
+                      else -> error("Unsupported import type")
+                  }
+
+                  val queued = initial.copy(
+                      aria2Gid = gid,
+                      status = if (type == DownloadSourceType.TORRENT) DownloadStatus.METADATA else DownloadStatus.QUEUED,
+                      updatedAt = System.currentTimeMillis()
+                  )
+                  repository.upsert(queued)
+                  ensureForegroundService()
+                  return syncNow().all.firstOrNull { it.id == queued.id } ?: queued
+              }
+
+              private fun buildDownloadOptions(
+                  settings: AppSettings,
+                  targetDir: File,
+                  fileName: String,
+                  selectedFiles: String?,
+                  includeOut: Boolean
+              ): Map<String, String> {
+                  val mutable = linkedMapOf(
+                      "dir" to targetDir.absolutePath,
+                      "continue" to "true",
+                      "split" to settings.split.toString(),
+                      "max-connection-per-server" to settings.maxConnectionPerServer.toString(),
+                      "min-split-size" to "${settings.minSplitSizeMb}M",
+                      "allow-overwrite" to "false",
+                      "auto-file-renaming" to "true"
+                  )
+                  if (includeOut) {
+                      mutable["out"] = fileName
+                  }
+                  if (!selectedFiles.isNullOrBlank()) {
+                      mutable["select-file"] = selectedFiles
+                  }
+                  return mutable
+              }
+
+              private fun displayDestination(settings: AppSettings): String =
+                  if (settings.downloadLocationUri != null) {
+                      settings.downloadLocationLabel ?: "Custom folder"
+                  } else {
+                      settings.downloadLocationPath
+                  }
+
+              private fun ensureForegroundService() {
+                  val intent = DownloadService.createIntent(context)
+                  ContextCompat.startForegroundService(context, intent)
+              }
+
+              private suspend fun copyImportToInternalStorage(uri: Uri): File = withContext(Dispatchers.IO) {
+                  val name = DocumentFile.fromSingleUri(context, uri)?.name ?: "import-${System.currentTimeMillis()}"
+                  val extension = name.substringAfterLast('.', "")
+                  val target = File(
+                      context.filesDir,
+                      "aria2/imports/${UUID.randomUUID()}${if (extension.isNotBlank()) ".${extension}" else ""}"
+                  )
+                  target.parentFile?.mkdirs()
+                  context.contentResolver.openInputStream(uri)?.use { input ->
+                      target.outputStream().use { output -> input.copyTo(output) }
+                  } ?: error("Unable to read the selected file.")
+                  target
+              }
+
+              private suspend fun exportToCustomLocationIfNeeded(
+                  sourcePath: String,
+                  fileName: String,
+                  settings: AppSettings,
+                  currentDestination: String?
+              ): String? = withContext(Dispatchers.IO) {
+                  val treeUriString = settings.downloadLocationUri ?: return@withContext currentDestination
+                  val treeUri = Uri.parse(treeUriString)
+                  val tree = DocumentFile.fromTreeUri(context, treeUri) ?: return@withContext currentDestination
+                  if (!tree.canWrite()) return@withContext currentDestination
+
+                  val sourceFile = File(sourcePath)
+                  val finalLabel = settings.downloadLocationLabel ?: "Custom folder"
+
+                  if (!sourceFile.exists()) {
+                      return@withContext if (currentDestination == finalLabel) finalLabel else currentDestination
+                  }
+
+                  if (currentDestination == finalLabel && tree.findFile(fileName) != null) {
+                      return@withContext finalLabel
+                  }
+
+                  val target = createUniqueDocument(tree, fileName) ?: return@withContext currentDestination
+                  context.contentResolver.openOutputStream(target.uri)?.use { output ->
+                      sourceFile.inputStream().use { input -> input.copyTo(output) }
+                  } ?: return@withContext currentDestination
+
+                  sourceFile.delete()
+                  finalLabel
+              }
+
+              private fun createUniqueDocument(tree: DocumentFile, fileName: String): DocumentFile? {
+                  val base = fileName.substringBeforeLast('.', fileName)
+                  val ext = fileName.substringAfterLast('.', "")
+                  var index = 0
+                  while (index < 1000) {
+                      val candidate = if (index == 0) {
+                          fileName
+                      } else {
+                          buildString {
+                              append(base)
+                              append(" (")
+                              append(index)
+                              append(")")
+                              if (ext.isNotBlank()) {
+                                  append('.')
+                                  append(ext)
+                              }
+                          }
+                      }
+                      if (tree.findFile(candidate) == null) {
+                          return tree.createFile("application/octet-stream", candidate)
+                      }
+                      index++
+                  }
+                  return null
+              }
+          }
+          EOF
+
+          cat > app/src/main/java/com/aria2/downloader/ui/screens/settings/SettingsScreen.kt <<'EOF'
+          package com.aria2.downloader.ui.screens.settings
+
+          import androidx.activity.compose.rememberLauncherForActivityResult
+          import androidx.activity.result.contract.ActivityResultContracts.OpenDocumentTree
+          import androidx.compose.foundation.layout.Arrangement
+          import androidx.compose.foundation.layout.Column
+          import androidx.compose.foundation.layout.Row
+          import androidx.compose.foundation.layout.fillMaxSize
+          import androidx.compose.foundation.layout.fillMaxWidth
+          import androidx.compose.foundation.layout.navigationBarsPadding
+          import androidx.compose.foundation.layout.padding
+          import androidx.compose.foundation.rememberScrollState
+          import androidx.compose.foundation.verticalScroll
+          import androidx.compose.material3.AssistChip
+          import androidx.compose.material3.Button
+          import androidx.compose.material3.Card
+          import androidx.compose.material3.CardDefaults
+          import androidx.compose.material3.ExperimentalMaterial3Api
+          import androidx.compose.material3.MaterialTheme
+          import androidx.compose.material3.OutlinedButton
+          import androidx.compose.material3.Scaffold
+          import androidx.compose.material3.SegmentedButton
+          import androidx.compose.material3.SingleChoiceSegmentedButtonRow
+          import androidx.compose.material3.Slider
+          import androidx.compose.material3.SnackbarHost
+          import androidx.compose.material3.SnackbarHostState
+          import androidx.compose.material3.Switch
+          import androidx.compose.material3.Text
+          import androidx.compose.material3.TopAppBar
+          import androidx.compose.runtime.Composable
+          import androidx.compose.runtime.LaunchedEffect
+          import androidx.compose.runtime.collectAsState
+          import androidx.compose.runtime.getValue
+          import androidx.compose.runtime.remember
+          import androidx.compose.ui.Modifier
+          import androidx.compose.ui.unit.dp
+          import com.aria2.downloader.data.preferences.SettingsRepository
+          import com.aria2.downloader.domain.model.AppIcon
+          import com.aria2.downloader.domain.model.ThemeMode
+
+          @OptIn(ExperimentalMaterial3Api::class)
+          @Composable
+          fun SettingsScreen(
+              paddingTop: androidx.compose.ui.unit.Dp,
+              viewModel: SettingsViewModel
+          ) {
+              val settings by viewModel.settings.collectAsState()
+              val message by viewModel.message.collectAsState()
+              val snackbarHostState = remember { SnackbarHostState() }
+
+              val currentLocation = if (settings.downloadLocationUri != null) {
+                  settings.downloadLocationLabel ?: "Custom folder"
+              } else {
+                  settings.downloadLocationPath
+              }
+
+              val folderPicker = rememberLauncherForActivityResult(OpenDocumentTree()) { uri ->
+                  if (uri != null) {
+                      viewModel.updateDownloadLocation(uri)
+                  }
+              }
+
+              LaunchedEffect(message) {
+                  message?.let {
+                      snackbarHostState.showSnackbar(it)
+                      viewModel.consumeMessage()
+                  }
+              }
+
+              Scaffold(
+                  topBar = { TopAppBar(title = { Text("Settings") }) },
+                  snackbarHost = { SnackbarHost(snackbarHostState) }
+              ) { inner ->
+                  Column(
+                      modifier = Modifier
+                          .fillMaxSize()
+                          .padding(inner)
+                          .padding(top = paddingTop)
+                          .verticalScroll(rememberScrollState())
+                          .navigationBarsPadding()
+                          .padding(horizontal = 16.dp, vertical = 10.dp)
+                          .padding(bottom = 100.dp),
+                      verticalArrangement = Arrangement.spacedBy(14.dp)
+                  ) {
+                      SettingsCard("Theme") {
+                          SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
+                              ThemeMode.entries.forEachIndexed { index, mode ->
+                                  SegmentedButton(
+                                      selected = settings.themeMode == mode,
+                                      onClick = { viewModel.updateTheme(mode) },
+                                      shape = androidx.compose.material3.SegmentedButtonDefaults.itemShape(
+                                          index,
+                                          ThemeMode.entries.size
+                                      )
+                                  ) {
+                                      Text(mode.name.lowercase().replaceFirstChar { it.titlecase() })
+                                  }
+                              }
+                          }
+                      }
+
+                      SettingsCard("Download location") {
+                          Text(
+                              "Current location",
+                              style = MaterialTheme.typography.labelMedium,
+                              color = MaterialTheme.colorScheme.onSurfaceVariant
+                          )
+                          Text(
+                              currentLocation,
+                              style = MaterialTheme.typography.bodyLarge
+                          )
+                          Text(
+                              if (settings.downloadLocationUri == null) {
+                                  "Default direct download path is /storage/emulated/0/Download"
+                              } else {
+                                  "Custom folders use SAF. aria2 downloads first, then completed files are copied into the selected folder."
+                              },
+                              style = MaterialTheme.typography.bodySmall,
+                              color = MaterialTheme.colorScheme.onSurfaceVariant
+                          )
+                          Row(
+                              modifier = Modifier.fillMaxWidth(),
+                              horizontalArrangement = Arrangement.spacedBy(10.dp)
+                          ) {
+                              Button(
+                                  onClick = { folderPicker.launch(null) },
+                                  modifier = Modifier.weight(1f)
+                              ) {
+                                  Text("Pick folder")
+                              }
+                              OutlinedButton(
+                                  onClick = viewModel::useDefaultDownloadLocation,
+                                  modifier = Modifier.weight(1f)
+                              ) {
+                                  Text("Use Download")
+                              }
+                          }
+                      }
+
+                      SettingsCard("Launcher icon") {
+                          Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                              AppIcon.entries.forEach { icon ->
+                                  AssistChip(
+                                      onClick = { viewModel.updateIcon(icon) },
+                                      label = { Text(icon.name.lowercase().replaceFirstChar { it.titlecase() }) }
+                                  )
+                              }
+                          }
+                      }
+
+                      SettingsCard("Concurrent downloads") {
+                          SliderRow("Queue size", settings.maxConcurrentDownloads.toFloat(), 1f..10f) {
+                              viewModel.updateConcurrent(it.toInt())
+                          }
+                          SliderRow("Split per item", settings.split.toFloat(), 1f..16f) {
+                              viewModel.updateSplit(it.toInt())
+                          }
+                          SliderRow("Connections per server", settings.maxConnectionPerServer.toFloat(), 1f..16f) {
+                              viewModel.updateConnections(it.toInt())
+                          }
+                          SliderRow("Min split size (MB)", settings.minSplitSizeMb.toFloat(), 1f..32f) {
+                              viewModel.updateMinSplit(it.toInt())
+                          }
+                      }
+
+                      SettingsCard("Torrent engine") {
+                          ToggleRow("DHT", settings.enableDht, viewModel::updateDht)
+                          ToggleRow("PEX", settings.peerExchange, viewModel::updatePex)
+                          ToggleRow("Local peer discovery", settings.localPeerDiscovery, viewModel::updateLpd)
+                          ToggleRow("Require encryption", settings.requireEncryption, viewModel::updateEncryption)
+                      }
+
+                      SettingsCard("Notifications") {
+                          ToggleRow(
+                              "Foreground service notifications",
+                              settings.notificationsEnabled,
+                              viewModel::updateNotifications
+                          )
+                      }
+
+                      SettingsCard("About this build") {
+                          Text("Version 1.1.0", style = MaterialTheme.typography.bodyMedium)
+                          Text("Developer: Aakash Panta", style = MaterialTheme.typography.bodyMedium)
+                          Text(
+                              "This build ships a bundled arm64 aria2 binary, starts it as a local daemon, and talks to it over JSON-RPC.",
+                              style = MaterialTheme.typography.bodySmall,
+                              color = MaterialTheme.colorScheme.onSurfaceVariant
+                          )
+                          Text(
+                              "Default path: ${SettingsRepository.DEFAULT_DOWNLOAD_PATH}",
+                              style = MaterialTheme.typography.bodySmall,
+                              color = MaterialTheme.colorScheme.onSurfaceVariant
+                          )
+                      }
+                  }
+              }
+          }
+
+          @Composable
+          private fun SettingsCard(
+              title: String,
+              content: @Composable () -> Unit
+          ) {
+              Card(
+                  colors = CardDefaults.cardColors(
+                      containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f)
+                  )
+              ) {
+                  Column(
+                      modifier = Modifier.padding(16.dp),
+                      verticalArrangement = Arrangement.spacedBy(12.dp)
+                  ) {
+                      Text(title, style = MaterialTheme.typography.titleMedium)
+                      content()
+                  }
+              }
+          }
+
+          @Composable
+          private fun SliderRow(
+              title: String,
+              value: Float,
+              range: ClosedFloatingPointRange<Float>,
+              onValueChange: (Float) -> Unit
+          ) {
+              Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                  Text("$title: ${value.toInt()}", style = MaterialTheme.typography.bodyMedium)
+                  Slider(
+                      value = value,
+                      onValueChange = onValueChange,
+                      valueRange = range
+                  )
+              }
+          }
+
+          @Composable
+          private fun ToggleRow(
+              title: String,
+              checked: Boolean,
+              onToggle: (Boolean) -> Unit
+          ) {
+              Row(
+                  modifier = Modifier.fillMaxWidth(),
+                  horizontalArrangement = Arrangement.SpaceBetween
+              ) {
+                  Text(title, style = MaterialTheme.typography.bodyMedium)
+                  Switch(checked = checked, onCheckedChange = onToggle)
+              }
+          }
+          EOF
+
+          cat > app/src/main/java/com/aria2/downloader/ui/screens/about/AboutScreen.kt <<'EOF'
+          package com.aria2.downloader.ui.screens.about
+
+          import androidx.compose.foundation.layout.Arrangement
+          import androidx.compose.foundation.layout.Column
+          import androidx.compose.foundation.layout.fillMaxSize
+          import androidx.compose.foundation.layout.navigationBarsPadding
+          import androidx.compose.foundation.layout.padding
+          import androidx.compose.foundation.rememberScrollState
+          import androidx.compose.foundation.verticalScroll
+          import androidx.compose.material3.Card
+          import androidx.compose.material3.CardDefaults
+          import androidx.compose.material3.ExperimentalMaterial3Api
+          import androidx.compose.material3.MaterialTheme
+          import androidx.compose.material3.Scaffold
+          import androidx.compose.material3.Text
+          import androidx.compose.material3.TopAppBar
+          import androidx.compose.runtime.Composable
+          import androidx.compose.ui.Modifier
+          import androidx.compose.ui.unit.dp
+
+          @OptIn(ExperimentalMaterial3Api::class)
+          @Composable
+          fun AboutScreen(paddingTop: androidx.compose.ui.unit.Dp) {
+              Scaffold(topBar = { TopAppBar(title = { Text("About") }) }) { inner ->
+                  Column(
+                      modifier = Modifier
+                          .fillMaxSize()
+                          .padding(inner)
+                          .padding(top = paddingTop)
+                          .verticalScroll(rememberScrollState())
+                          .navigationBarsPadding()
+                          .padding(16.dp)
+                          .padding(bottom = 100.dp),
+                      verticalArrangement = Arrangement.spacedBy(14.dp)
+                  ) {
+                      Card(
+                          colors = CardDefaults.cardColors(
+                              containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f)
+                          )
+                      ) {
+                          Column(
+                              modifier = Modifier.padding(16.dp),
+                              verticalArrangement = Arrangement.spacedBy(10.dp)
+                          ) {
+                              Text("Aria2 Downloader", style = MaterialTheme.typography.headlineSmall)
+                              Text("Version 1.1.0", style = MaterialTheme.typography.titleMedium)
+                              Text("Developer: Aakash Panta", style = MaterialTheme.typography.bodyLarge)
+                              Text(
+                                  "Production-style Android download manager with aria2 JSON-RPC, multi-connection direct downloads, BitTorrent, magnet and Metalink support, foreground syncing and a Material 3 UI.",
+                                  style = MaterialTheme.typography.bodyMedium,
+                                  color = MaterialTheme.colorScheme.onSurfaceVariant
+                              )
+                              Text(
+                                  "Default public save path: /storage/emulated/0/Download",
+                                  style = MaterialTheme.typography.bodySmall,
+                                  color = MaterialTheme.colorScheme.onSurfaceVariant
+                              )
+                              Text(
+                                  "You can switch to a custom folder from Settings using the document tree picker.",
+                                  style = MaterialTheme.typography.bodySmall,
+                                  color = MaterialTheme.colorScheme.onSurfaceVariant
+                              )
+                          }
+                      }
+                  }
+              }
+          }
+          EOF
+
+      - name: Show changed files
+        shell: bash
+        run: |
+          echo "=== CHANGED FILES ==="
+          git status --short
+
+      - name: Commit and push replacements
+        shell: bash
+        run: |
+          set -e
+
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+
+          git add \
+            app/src/main/AndroidManifest.xml \
+            app/src/main/java/com/aria2/downloader/domain/model/AppSettings.kt \
+            app/src/main/java/com/aria2/downloader/data/preferences/SettingsRepository.kt \
+            app/src/main/java/com/aria2/downloader/ui/permissions/PermissionGate.kt \
+            app/src/main/java/com/aria2/downloader/ui/screens/settings/SettingsViewModel.kt \
+            app/src/main/java/com/aria2/downloader/domain/engine/Aria2ProcessManager.kt \
+            app/src/main/java/com/aria2/downloader/domain/engine/DownloadEngine.kt \
+            app/src/main/java/com/aria2/downloader/ui/screens/settings/SettingsScreen.kt \
+            app/src/main/java/com/aria2/downloader/ui/screens/about/AboutScreen.kt
+
+          if git diff --cached --quiet; then
+            echo "No changes to commit"
+            exit 0
+          fi
+
+          git commit -m 'Fix storage permissions, download path, and settings UI'
+          git push
